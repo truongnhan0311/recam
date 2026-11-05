@@ -15,3 +15,4 @@ Dự án Recam: hiện chỉ có tài liệu thiết kế (S1). Đọc `README.m
 - Giới hạn chống dò phải theo cả đối tượng bị dò (token) lẫn bên dò (IP, `uuid`).
 - Mã lỗi/lý do đóng phải đúng nghĩa; timeout dùng mã `timeout_*` riêng.
 - Thêm thông điệp `Mq*` mới thì thêm vào `x-mqtt` và cho kế thừa `MqEnvelope`.
+- Ghi tên thư viện hay thuật toán vào tài liệu thì kiểm trước: phiên bản trên `proxy.golang.org`, và đọc mã của framework xem có hỗ trợ không (ví dụ Goravel chỉ ký JWT HS256).

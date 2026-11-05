@@ -720,7 +720,7 @@ components:
       type: http
       scheme: bearer
       bearerFormat: JWT
-      description: Access token của người dùng, sống 15 phút. Claim `sub`, `exp`, `iat`, `jti`.
+      description: Access token của người dùng, JWT HS256, sống 15 phút. Claim `sub`, `exp`, `iat`, `jti`.
     deviceSign:
       type: apiKey
       in: header

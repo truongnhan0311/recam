@@ -82,7 +82,7 @@ Một điện thoại có thể vừa là Camera vừa là Viewer; hai vai dùng
 ## 3. Danh tính và xác thực
 
 ### 3.1 Người dùng
-Email/mật khẩu (`/auth/register`, `/auth/login`). **Access token** JWT ES256 sống 15 phút; **refresh token** sống 30 ngày, xoay vòng, dùng lại token cũ thì cả chuỗi bị thu hồi.
+Email/mật khẩu (`/auth/register`, `/auth/login`). **Access token** JWT **HS256** sống 15 phút (JWT guard có sẵn của Goravel, chỉ ký được HS256). Dùng HS256 được vì chỉ `cam-api` ký và kiểm token; `cam-mq` cũng hỏi `cam-api`, không bên thứ ba nào cần khóa công khai. Bí mật (`JWT_SECRET`) ngẫu nhiên ≥ 32 byte, giống nhau trên mọi node `cam-api`, nằm trong kho bí mật, không nằm trong mã. **Refresh token** là chuỗi ngẫu nhiên (không phải JWT), server chỉ lưu băm, sống 30 ngày, xoay vòng, dùng lại token cũ thì cả chuỗi bị thu hồi. Phần xoay vòng dự án tự viết, vì cơ chế làm mới của Goravel không có phát hiện dùng lại.
 
 ### 3.2 Thiết bị (Camera)
 Theo Tuya:

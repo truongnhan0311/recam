@@ -26,6 +26,8 @@
 
 - **v0.3.1 (đọc lại thiết kế):** v1 không đàm phán lại SDP, talkback dùng audio `sendrecv` + `replaceTrack`; thêm `MqSessionState` báo viewer camera đã thức; giới hạn kích hoạt theo IP (10 sai/giờ) và `uuid` (5 sai/10 phút); CSDL `mq_node` là nguồn quyết định shard, băm chỉ dùng khi gán; retained MQTT là nguồn hiện diện, Valkey là bản sao; thêm `timeout_answer`.
 
+- **Stack server (2026-11-05):** `cam-api` dùng Goravel v1.18.0; JWT đổi từ ES256 sang **HS256** (guard Goravel cố định HS256 ở `auth/jwt_guard.go`, người phụ trách đồng ý); refresh token tự viết. Danh sách thư viện ở `plan.md` mục 3.1.
+
 ## Open issues
 - `make proto-check` chưa chạy lại trên bản v0.3.1 (phiên cloud chặn tải Go 1.26); đã kiểm bằng script Python tương đương.
 - Cân bằng lại tải shard: đã thiết kế (`ARCHITECTURE.md` 3.2.1, `MqMigrate`); chưa đo thời gian chuyển một đợt và chi phí `cam-api` đăng ký `cam/presence/+` trên mọi shard (S3).

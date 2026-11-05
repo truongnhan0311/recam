@@ -274,16 +274,40 @@ Trình tự khi app muốn xem (đọc từ tên hàm, kiểu dữ liệu và ch
 | Camera nền Android | Foreground Service + WakeLock | Cách chuẩn để chạy lâu | |
 | Camera nền iOS | Giữ app foreground, màn hình mờ, cắm sạc | iOS không cho chạy camera nền lâu dài | Giới hạn sản phẩm, xem rủi ro R1 |
 | **Ngôn ngữ server** | **Chỉ Go** (chỉ đạo) | Một ngôn ngữ cho server, hạ tầng và công cụ kiểm tra | |
-| Server API (`cam-api`) | Go, `net/http` | REST; cụm không giữ trạng thái | |
+| Server API (`cam-api`) | Go, framework **Goravel** (chỉ đạo 2026-11-05) | REST; cụm không giữ trạng thái; có sẵn route, middleware, validation, ORM, queue, schedule, hash, rate limiter | Go `net/http` thuần |
 | Server MQTT (`cam-mq`) | Go, thư viện `mochi-mqtt/server` | Kênh điều khiển như Tuya: hiện diện bằng Last Will, QoS 1, ACL theo chủ đề; xác thực bằng hook Go. Dự phòng MQTT qua WSS 443. **Chưa xác minh** về cụm và bảo trì (bản mới nhất trên proxy ghi 2025-03-01) | EMQX (Erlang), Mosquitto (C), vì lệch Go-only |
 | DB | PostgreSQL | Tài khoản, camera, quyền | MySQL |
 | Presence/pubsub | Valkey (hoặc Redis) | Bản sao presence để đọc nhanh (nguồn gốc là retained MQTT `cam/presence`), phiên đang chạy, giới hạn tốc độ | |
 | Server Stream (`cam-stream`) | Go, thư viện `pion/turn` | TURN theo vùng, các node độc lập, dùng chung bí mật HMAC với `cam-api`. **Chưa đo tải** so với coturn | coturn (C), vì lệch Go-only |
-| Auth | JWT (access ngắn + refresh), đăng nhập email/Apple/Google | Chuẩn, App Store yêu cầu Sign in with Apple nếu có đăng nhập bên thứ ba | |
-| Push | FCM (Android) + APNs (iOS) | Miễn phí | |
+| Auth | JWT **HS256** qua guard của Goravel (access ngắn) + refresh token ngẫu nhiên tự viết, đăng nhập email/Apple/Google | Chuẩn, App Store yêu cầu Sign in with Apple nếu có đăng nhập bên thứ ba | |
+| Push | FCM, gửi cả Android và iOS (FCM chuyển tiếp qua APNs) | Miễn phí, một thư viện | APNs trực tiếp |
 | Quảng cáo | Google AdMob + UMP (đồng ý) + ATT (iOS) | Phổ biến, có SDK Flutter | |
 | Thanh toán | Apple IAP + Google Play Billing, qua RevenueCat hoặc tự kiểm biên lai | Store bắt buộc với thuê bao số | |
 | Giám sát | Prometheus + Grafana + Loki | Bộ giám sát phổ biến, mã nguồn mở | |
+
+### 3.1 Thư viện Go phía server
+
+Bản mới nhất theo Go module proxy ngày 2026-11-05. **Chỉ `cam-api` dùng Goravel**; `cam-mq` và `cam-stream` là server mạng chạy lâu (MQTT, TURN), viết Go thuần cho gọn. Server không cần `pion/webrtc` vì media đi thẳng giữa hai điện thoại.
+
+| Server | Việc | Module | Bản |
+|---|---|---|---|
+| `cam-api` | Framework | `github.com/goravel/framework` | v1.18.0 |
+| `cam-api` | HTTP driver | `github.com/goravel/gin` (hoặc `goravel/fiber`) | v1.18.0 |
+| `cam-api` | PostgreSQL (ORM, migration) | `github.com/goravel/postgres` | v1.18.0 |
+| `cam-api` | Valkey: cache, giới hạn tốc độ, bản sao hiện diện (cùng giao thức Redis) | `github.com/goravel/redis` | v1.18.0 |
+| `cam-api` | Kho log tải lên, URL có chữ ký | `github.com/goravel/s3` (hoặc `goravel/minio` nếu tự host) | v1.18.0 |
+| `cam-api` | Client MQTT 5 (ghi `in/*`, `user/*`; nghe `out/+`, `presence/+`) | `github.com/eclipse/paho.golang` | v0.23.0 |
+| `cam-api` | Gán shard, băm nhất quán có nút ảo | `github.com/buraksezer/consistent` | v1.1.0 |
+| `cam-api` | Push đánh thức (FCM) | `firebase.google.com/go/v4` | v4.22.0 |
+| `cam-api` | Kiểm giao dịch App Store, Google Play (nếu không dùng RevenueCat) | `github.com/awa/go-iap` | v1.59.0 |
+| `cam-api` | UUID | `github.com/google/uuid` | v1.6.0 |
+| `cam-mq` | Broker MQTT, xác thực và ACL qua hàm móc | `github.com/mochi-mqtt/server/v2` | v2.7.9 (bản cuối 2025-03-01, rủi ro bảo trì, thử ở S3) |
+| `cam-stream` | TURN (UDP 3478, TCP/TLS 443, HMAC theo thời gian) | `github.com/pion/turn/v4` | v4.1.4 |
+| Chung | Số đo | `github.com/prometheus/client_golang` | v1.25.0 |
+| Chung | Sinh code từ `openapi.yaml` (tùy chọn) | `github.com/oapi-codegen/oapi-codegen/v2` | v2.8.2 |
+| Chung | Mã hóa bổ sung | `golang.org/x/crypto` | v0.58.0 |
+
+Băm mật khẩu dùng Hash của Goravel (argon2id); HMAC, SHA-256 dùng thư viện chuẩn của Go. Không dùng `sideshow/apns2` (bản cuối 2024-10) vì FCM đã gửi được tới iOS.
 
 ---
 
