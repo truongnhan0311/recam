@@ -1,0 +1,1518 @@
+openapi: 3.1.0
+info:
+  title: Recam API
+  version: 0.2.0-draft
+  summary: Kích hoạt thiết bị, tài khoản, chia sẻ, phiên xem. Thiết kế bám sát luồng của Tuya.
+  description: |
+    Bản nháp S1 (v0.2) viết lại theo luồng thiết bị ↔ cloud của Tuya
+    (xem `PROTOCOL.md` mục 1 về chỗ giống và chỗ khác).
+
+    Chia hai đường:
+    - **HTTPS REST** (tài liệu này): tìm địa chỉ, ghép đôi, kích hoạt, tài khoản, chia sẻ, tạo phiên, chuyển signaling của viewer.
+    - **MQTT qua TLS** (đẩy xuống và báo lên): các thông điệp `Mq*` trong `components.schemas`; chủ đề và quyền ghi ở `x-mqtt` bên dưới. OpenAPI không mô tả MQTT nên phần này nằm trong tiện ích mở rộng.
+    - **DataChannel `ctrl`** (lệnh theo thời gian thực trong phiên): các thông điệp `Ctrl*`.
+
+    Quy ước chung:
+    - Mọi lỗi dùng `application/problem+json` (RFC 9457), schema `Problem`, có `code` ổn định.
+    - Mọi thông điệp MQTT/DataChannel có phiên bản `v`.
+    - Trường lạ phải được bỏ qua.
+servers:
+  - url: https://api.example.invalid/v1
+    description: Địa chỉ giả; địa chỉ thật lấy từ `POST /url_config`.
+security:
+  - bearerAuth: []
+tags:
+  - name: config
+  - name: auth
+  - name: devices
+  - name: cameras
+  - name: sharing
+  - name: sessions
+  - name: mqtt
+  - name: logs
+
+x-mqtt:
+  broker: "mqtts://<host>:8883 hoặc wss://<host>:443/mqtt"
+  qos: 1
+  keepalive_s: 60
+  topics:
+    - name: "cam/device/in/{devid}"
+      direction: server→camera
+      subscribe: [device]
+      messages: [MqOffer, MqCandidate, MqDisconnect, MqDpSet, MqReset, MqLogRequest, MqError]
+    - name: "cam/device/out/{devid}"
+      direction: camera→server
+      publish: [device]
+      messages: [MqAnswer, MqCandidate, MqDisconnect, MqDpReport, MqError]
+    - name: "cam/user/{uid}"
+      direction: server→app (chủ hoặc người được chia sẻ)
+      subscribe: [user]
+      messages: [MqAnswer, MqCandidate, MqDisconnect, MqDpReport, MqLogRequest, MqError]
+    - name: "cam/presence/{devid}"
+      direction: camera→server (retained, có LWT)
+      publish: [device]
+      payload: '{"v":1,"online":true,"ts":0}'
+  rules:
+    - Thiết bị và người dùng chỉ được đăng ký (subscribe) vào chủ đề của chính mình.
+    - Người dùng không được ghi (publish) lên MQTT; signaling của viewer đi qua REST rồi server chuyển tiếp.
+    - Server là bên duy nhất ghi vào cam/device/in/* và cam/user/*.
+
+paths:
+  /url_config:
+    post:
+      tags: [config]
+      operationId: urlConfig
+      summary: Tìm địa chỉ API và MQTT theo vùng (chưa cần đăng nhập)
+      description: |
+        Thiết bị và app gọi đầu tiên. Cùng kiểu với bước tìm địa chỉ của Tuya: gửi vùng, nhận địa chỉ HTTPS và MQTT.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UrlConfigRequest" }
+      responses:
+        "200":
+          description: Địa chỉ
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UrlConfig" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "426": { $ref: "#/components/responses/UpgradeRequired" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+
+  /auth/register:
+    post:
+      tags: [auth]
+      operationId: register
+      summary: Tạo tài khoản
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/Credentials" }
+      responses:
+        "201":
+          description: Đã tạo
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TokenPair" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+
+  /auth/login:
+    post:
+      tags: [auth]
+      operationId: login
+      summary: Đăng nhập
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/Credentials" }
+      responses:
+        "200":
+          description: Thành công
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TokenPair" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+
+  /auth/refresh:
+    post:
+      tags: [auth]
+      operationId: refreshToken
+      summary: Làm mới access token (refresh token xoay vòng)
+      description: Mỗi lần dùng trả refresh token mới. Dùng lại token cũ làm cả chuỗi bị thu hồi.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refresh_token]
+              properties:
+                refresh_token: { type: string }
+      responses:
+        "200":
+          description: Cặp token mới
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TokenPair" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+
+  /auth/logout:
+    post:
+      tags: [auth]
+      operationId: logout
+      summary: Đăng xuất, thu hồi refresh token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refresh_token]
+              properties:
+                refresh_token: { type: string }
+      responses:
+        "204": { description: Đã đăng xuất }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+
+  /me:
+    get:
+      tags: [auth]
+      operationId: getMe
+      summary: Thông tin tài khoản
+      responses:
+        "200":
+          description: Tài khoản
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/User" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /me/entitlements:
+    get:
+      tags: [auth]
+      operationId: getEntitlements
+      summary: Quyền lợi theo gói hiện tại (Free hoặc Plan)
+      description: Giới hạn do server tính; app chỉ hiển thị, không tự quyết.
+      responses:
+        "200":
+          description: Quyền lợi
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Entitlements" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /pairing-tokens:
+    post:
+      tags: [devices]
+      operationId: createPairingToken
+      summary: Tạo token ghép đôi (chủ tài khoản)
+      description: |
+        Tương đương token do cloud tạo trong bước ghép đôi của Tuya: **tối đa 8 ký tự, sống 10 phút, dùng một lần**.
+        Điện thoại làm camera nhận token bằng mã QR (`qr_payload`) hoặc nhập tay, rồi dùng nó để kích hoạt.
+        Nếu camera chạy trong cùng app đã đăng nhập thì app tự gọi endpoint này và dùng ngay.
+        Sai quá 5 lần khi kích hoạt thì token bị khóa.
+      responses:
+        "201":
+          description: Token
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PairingToken" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "402": { $ref: "#/components/responses/PaymentRequired" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+
+  /devices/activate:
+    post:
+      tags: [devices]
+      operationId: activateDevice
+      summary: Kích hoạt thiết bị (đổi token ghép đôi lấy khóa riêng)
+      description: |
+        Tương đương bước kích hoạt của Tuya: thiết bị gửi token ghép đôi cùng `uuid` và `authkey` của chính nó,
+        server trả `devid`, `seckey`, `localkey`. Thiết bị lưu cả ba vào kho khóa của hệ điều hành.
+        `t` (ms) phải lệch giờ server không quá 5 phút. Kích hoạt lại cùng `uuid` thì cấp lại `devid` cũ.
+        Gói Free chỉ cho 1 camera; vượt thì `402 plan_limit_reached`.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ActivateRequest" }
+      responses:
+        "200":
+          description: Đã kích hoạt
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ActivateResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "402": { $ref: "#/components/responses/PaymentRequired" }
+        "410": { $ref: "#/components/responses/Gone" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+
+  /devices/{devid}/info:
+    put:
+      tags: [devices]
+      operationId: putDeviceInfo
+      summary: Cập nhật khi khởi động (báo phiên bản, khả năng, DP ban đầu; nhận cấu hình động)
+      description: Tương đương `info.sync` và `dynamic.config.get` của Tuya. Gọi sau kích hoạt và mỗi lần khởi động lại.
+      security:
+        - deviceSign: []
+      parameters:
+        - { $ref: "#/components/parameters/Devid" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DeviceInfo" }
+      responses:
+        "200":
+          description: Cấu hình động
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DynamicConfig" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /devices/{devid}/push-token:
+    put:
+      tags: [devices]
+      operationId: putPushToken
+      summary: Đăng ký token đẩy (FCM/APNs) để đánh thức Camera mode
+      security:
+        - deviceSign: []
+      parameters:
+        - { $ref: "#/components/parameters/Devid" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [t, provider, token]
+              properties:
+                t: { type: integer, format: int64 }
+                provider: { type: string, enum: [fcm, apns] }
+                token: { type: string }
+      responses:
+        "204": { description: Đã lưu }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /devices/{devid}/reset:
+    post:
+      tags: [devices]
+      operationId: resetDevice
+      summary: Thiết bị báo đã đặt lại (hủy kích hoạt)
+      description: Tương đương `device.reset` của Tuya. Server hủy ghép camera và đóng mọi phiên.
+      security:
+        - deviceSign: []
+      parameters:
+        - { $ref: "#/components/parameters/Devid" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [t, reset_type]
+              properties:
+                t: { type: integer, format: int64 }
+                reset_type: { $ref: "#/components/schemas/ResetType" }
+      responses:
+        "204": { description: Đã đặt lại }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /mqtt/access-config:
+    post:
+      tags: [mqtt]
+      operationId: mqttAccessConfig
+      summary: Cấp thông tin kết nối MQTT có hạn cho app (chủ hoặc người được chia sẻ)
+      description: |
+        Cùng kiểu với `access/config` phía người dùng của Tuya. Trả địa chỉ, `client_id`, `username`, `password`,
+        thời điểm hết hạn và chủ đề được phép đăng ký. Khi sắp hết hạn: **bỏ hẳn client cũ, xin cấu hình mới,
+        nối bằng client mới.** Không để thư viện tự nối lại bằng thông tin cũ (tránh "bão kết nối lại").
+        Thiết bị camera **không** gọi endpoint này: nó tự suy ra mật khẩu từ `seckey` (xem `PROTOCOL.md` mục 3.2).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [link_id]
+              properties:
+                link_id:
+                  type: string
+                  description: Mã duy nhất mỗi lần xin, ví dụ `<app>.<uuid>`
+      responses:
+        "200":
+          description: Cấu hình MQTT
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MqttAccessConfig" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+
+  /cameras:
+    get:
+      tags: [cameras]
+      operationId: listCameras
+      summary: Camera của tôi và camera được chia sẻ cho tôi
+      responses:
+        "200":
+          description: Danh sách
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/Camera" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /cameras/{camera_id}:
+    parameters:
+      - { $ref: "#/components/parameters/CameraId" }
+    get:
+      tags: [cameras]
+      operationId: getCamera
+      summary: Chi tiết một camera
+      responses:
+        "200":
+          description: Camera
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Camera" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      tags: [cameras]
+      operationId: updateCamera
+      summary: Đổi tên camera (chỉ chủ)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string, maxLength: 64 }
+      responses:
+        "200":
+          description: Đã cập nhật
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Camera" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [cameras]
+      operationId: deleteCamera
+      summary: Gỡ camera (chủ)
+      description: Server gửi lệnh `reset` (loại `remote_unactive`) qua MQTT, đóng mọi phiên trong tối đa 5 giây, xóa khóa của thiết bị.
+      responses:
+        "204": { description: Đã gỡ }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /cameras/{camera_id}/invites:
+    parameters:
+      - { $ref: "#/components/parameters/CameraId" }
+    post:
+      tags: [sharing]
+      operationId: createInvite
+      summary: Tạo lời mời chia sẻ (chủ)
+      description: |
+        Dùng một lần, hết hạn sau 24 giờ; server chỉ lưu băm. Vượt giới hạn gói (Free 1 người, Plan 10 người)
+        trả `402 plan_limit_reached`.
+      responses:
+        "201":
+          description: Lời mời
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Invite" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "402": { $ref: "#/components/responses/PaymentRequired" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+
+  /invites/{token}/accept:
+    post:
+      tags: [sharing]
+      operationId: acceptInvite
+      summary: Người nhận chấp nhận lời mời
+      parameters:
+        - name: token
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Đã được chia sẻ
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Share" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "402": { $ref: "#/components/responses/PaymentRequired" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "410": { $ref: "#/components/responses/Gone" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+
+  /cameras/{camera_id}/shares:
+    parameters:
+      - { $ref: "#/components/parameters/CameraId" }
+    get:
+      tags: [sharing]
+      operationId: listShares
+      summary: Những người đang được chia sẻ (chủ)
+      responses:
+        "200":
+          description: Danh sách
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, limit]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/Share" }
+                  limit: { type: integer, description: "Số người tối đa theo gói hiện tại" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /cameras/{camera_id}/shares/{user_id}:
+    delete:
+      tags: [sharing]
+      operationId: revokeShare
+      summary: Thu hồi chia sẻ (chủ). Phiên đang xem của người đó bị cắt trong tối đa 5 giây.
+      parameters:
+        - { $ref: "#/components/parameters/CameraId" }
+        - name: user_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "204": { description: Đã thu hồi }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /sessions:
+    post:
+      tags: [sessions]
+      operationId: createSession
+      summary: Viewer xin một phiên xem và nhận thông tin ICE
+      description: |
+        Tương đương bước "app xin cấu hình P2P" của Tuya. Server kiểm quyền, tình trạng online (hiện diện MQTT),
+        sức chứa `min(giới hạn của gói, max_viewers của camera)`, rồi cấp `token`, `udp_token`, `tcp_token`
+        (thông tin STUN/TURN có hạn).
+
+        - Camera online: `201`, state `negotiating`. Viewer gửi `offer` qua `POST /sessions/{id}/signal`.
+        - Camera ở nền, có push token: `202`, state `waking`, server gửi push và chờ tối đa 15 giây.
+        - Camera offline: `409 camera_offline`. Đầy: `409 camera_busy`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SessionCreate" }
+      responses:
+        "201":
+          description: Phiên đã tạo
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Session" }
+        "202":
+          description: Đang đánh thức camera
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Session" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+
+  /sessions/{session_id}:
+    parameters:
+      - { $ref: "#/components/parameters/SessionId" }
+    get:
+      tags: [sessions]
+      operationId: getSession
+      summary: Trạng thái phiên
+      responses:
+        "200":
+          description: Phiên
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Session" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [sessions]
+      operationId: closeSession
+      summary: Kết thúc phiên
+      responses:
+        "204": { description: Đã đóng }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /sessions/{session_id}/signal:
+    post:
+      tags: [sessions]
+      operationId: sendSignal
+      summary: Viewer gửi thông điệp signaling cho camera (server chuyển tiếp qua MQTT)
+      description: |
+        Giống cách app của Tuya gửi signaling qua cloud. Body là một thông điệp `MqOffer`, `MqCandidate`
+        hoặc `MqDisconnect`. Server kiểm `sessionid` thuộc về người gọi, rồi ghi vào `cam/device/in/{devid}`.
+        Trả lời của camera (`answer`, `candidate`) đến viewer qua MQTT `cam/user/{uid}`.
+        `offer` **PHẢI** có `a=fingerprint` trong SDP; thiếu thì `400 insecure_sdp`.
+      parameters:
+        - { $ref: "#/components/parameters/SessionId" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - { $ref: "#/components/schemas/MqOffer" }
+                - { $ref: "#/components/schemas/MqCandidate" }
+                - { $ref: "#/components/schemas/MqDisconnect" }
+      responses:
+        "202": { description: Đã chuyển cho camera }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+
+  /sessions/{session_id}/turn-credentials:
+    post:
+      tags: [sessions]
+      operationId: refreshTurnCredentials
+      summary: Xin thông tin TURN mới khi sắp hết hạn
+      parameters:
+        - { $ref: "#/components/parameters/SessionId" }
+      responses:
+        "200":
+          description: Thông tin TURN mới
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/IceTokens" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+
+  /sessions/{session_id}/report:
+    post:
+      tags: [sessions]
+      operationId: reportSession
+      summary: Báo cáo số đo sau phiên (phục vụ đo P2P/TURN)
+      description: Không chứa nội dung media. Camera ký bằng `deviceSign`, viewer dùng Bearer.
+      security:
+        - bearerAuth: []
+        - deviceSign: []
+      parameters:
+        - { $ref: "#/components/parameters/SessionId" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SessionReport" }
+      responses:
+        "204": { description: Đã nhận }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /logs/requests:
+    post:
+      tags: [logs]
+      operationId: createLogRequest
+      summary: Yêu cầu camera hoặc app gửi nhật ký (log) lên server khi cần
+      description: |
+        Tương đương việc cloud của Tuya lấy log của thiết bị theo yêu cầu. Server gửi `log.request` qua MQTT
+        (camera: `cam/device/in/{devid}`, app: `cam/user/{uid}`) kèm **URL tải lên có chữ ký, sống 15 phút**.
+        Bên nhận gom log theo `level`, `since_minutes`, `max_bytes`, **che dữ liệu nhạy cảm**, nén gzip,
+        `PUT` lên URL đó, rồi gọi `POST /logs/requests/{request_id}/complete`.
+
+        Ai được tạo yêu cầu: chủ camera (cho camera của mình), chính người dùng (cho app của mình).
+        Nhân viên hỗ trợ chỉ tạo được khi người dùng đã bật cho phép hỗ trợ xem log (`support_consent`).
+        Mọi yêu cầu được ghi vào nhật ký kiểm toán mà chủ xem được.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/LogRequestCreate" }
+      responses:
+        "202":
+          description: Đã tạo yêu cầu, đang gửi xuống thiết bị
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LogRequest" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+
+  /logs/requests/{request_id}:
+    get:
+      tags: [logs]
+      operationId: getLogRequest
+      summary: Trạng thái một yêu cầu log
+      parameters:
+        - { $ref: "#/components/parameters/RequestId" }
+      responses:
+        "200":
+          description: Yêu cầu
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LogRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /logs/requests/{request_id}/complete:
+    post:
+      tags: [logs]
+      operationId: completeLogRequest
+      summary: Báo đã tải log lên (hoặc không gửi được)
+      description: Camera ký bằng `deviceSign`, app dùng Bearer. Server kiểm kích thước và băm với tệp đã nhận.
+      security:
+        - bearerAuth: []
+        - deviceSign: []
+      parameters:
+        - { $ref: "#/components/parameters/RequestId" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/LogComplete" }
+      responses:
+        "204": { description: Đã ghi nhận }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "410": { $ref: "#/components/responses/Gone" }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Access token của người dùng, sống 15 phút. Claim `sub`, `exp`, `iat`, `jti`.
+    deviceSign:
+      type: apiKey
+      in: header
+      name: X-Sign
+      description: |
+        Chữ ký của thiết bị (kiểu yêu cầu có ký của Tuya). Gửi kèm `X-Devid` và `X-Time` (ms).
+        `X-Sign = hex(HMAC-SHA256(seckey, METHOD + "\n" + PATH + "\n" + X-Time + "\n" + hex(SHA256(body))))`.
+        Server từ chối nếu `X-Time` lệch quá 5 phút hoặc chữ ký sai (`401`).
+
+  parameters:
+    CameraId:
+      name: camera_id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    SessionId:
+      name: session_id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    RequestId:
+      name: request_id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    Devid:
+      name: devid
+      in: path
+      required: true
+      description: Mã thiết bị do server cấp khi kích hoạt (cũng là `camera_id`)
+      schema: { type: string, format: uuid }
+
+  responses:
+    BadRequest:
+      description: Yêu cầu không hợp lệ
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/Problem" }
+    Unauthorized:
+      description: Thiếu hoặc sai xác thực, token hết hạn, chữ ký sai
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/Problem" }
+    PaymentRequired:
+      description: Vượt giới hạn của gói (`code=plan_limit_reached`)
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/Problem" }
+    Forbidden:
+      description: Không có quyền
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/Problem" }
+    NotFound:
+      description: Không tìm thấy hoặc không được phép biết là có tồn tại
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/Problem" }
+    Conflict:
+      description: Xung đột trạng thái (`camera_offline`, `camera_busy`, đã tồn tại…)
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/Problem" }
+    Gone:
+      description: Hết hạn hoặc đã dùng (`invite_expired`, `invite_used`, `pairing_token_invalid`)
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/Problem" }
+    UpgradeRequired:
+      description: App hoặc giao thức quá cũ (`unsupported_version`)
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/Problem" }
+    TooManyRequests:
+      description: Vượt giới hạn tốc độ; xem `Retry-After`
+      headers:
+        Retry-After:
+          schema: { type: integer }
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/Problem" }
+
+  schemas:
+    # ------------------------------------------------------------ chung
+    Problem:
+      type: object
+      description: Lỗi theo RFC 9457. App xử lý theo `code`, không theo `detail`.
+      required: [title, status, code]
+      properties:
+        type: { type: string, format: uri-reference, default: "about:blank" }
+        title: { type: string }
+        status: { type: integer }
+        detail: { type: string }
+        code: { $ref: "#/components/schemas/ErrorCode" }
+        trace_id: { type: string }
+        limit: { type: integer, description: "Giới hạn đã vượt" }
+        current: { type: integer, description: "Giá trị hiện tại" }
+
+    ErrorCode:
+      type: string
+      enum:
+        - invalid_request
+        - unauthorized
+        - token_expired
+        - bad_signature
+        - forbidden
+        - not_found
+        - conflict
+        - plan_limit_reached
+        - camera_offline
+        - camera_busy
+        - invite_expired
+        - invite_used
+        - pairing_token_invalid
+        - rate_limited
+        - unsupported_version
+        - insecure_sdp
+        - access_revoked
+        - preempted
+        - internal
+
+    UrlConfigRequest:
+      type: object
+      required: [keys]
+      properties:
+        region: { type: string, example: sg }
+        env: { type: string, enum: [prod, test], default: prod }
+        keys:
+          type: array
+          items: { type: string, enum: [httpsSelfUrl, mqttsSelfUrl] }
+          example: [httpsSelfUrl, mqttsSelfUrl]
+        app_version: { type: string }
+    UrlConfig:
+      type: object
+      required: [min_app_version, proto_versions]
+      properties:
+        min_app_version: { type: string, example: "0.1.0" }
+        proto_versions:
+          type: array
+          items: { type: integer }
+          example: [1]
+        httpsSelfUrl:
+          type: object
+          properties:
+            addr: { type: string, format: uri }
+        mqttsSelfUrl:
+          type: object
+          properties:
+            addr: { type: string }
+
+    # ------------------------------------------------------------ tài khoản
+    Credentials:
+      type: object
+      required: [email, password]
+      properties:
+        email: { type: string, format: email }
+        password: { type: string, minLength: 8, writeOnly: true }
+    User:
+      type: object
+      required: [id, email]
+      properties:
+        id: { type: string, format: uuid }
+        email: { type: string, format: email }
+        tier: { type: string, enum: [free, paid] }
+    TokenPair:
+      type: object
+      required: [access_token, refresh_token, expires_in, user]
+      properties:
+        access_token: { type: string }
+        refresh_token: { type: string }
+        expires_in: { type: integer, example: 900 }
+        user: { $ref: "#/components/schemas/User" }
+    Entitlements:
+      type: object
+      required: [tier, cameras_max, shares_per_camera_max, max_resolution, ads]
+      properties:
+        tier: { type: string, enum: [free, paid] }
+        cameras_max: { type: integer, example: 1 }
+        shares_per_camera_max: { type: integer, example: 1, description: "Free 1; Plan 10" }
+        max_resolution: { type: string, enum: ["360p", "480p", "720p"] }
+        ads: { type: boolean, description: "true với Free, false với Plan" }
+        expires_at: { type: [string, "null"], format: date-time }
+
+    # ------------------------------------------------------------ thiết bị
+    PairingToken:
+      type: object
+      required: [token, qr_payload, expires_at]
+      properties:
+        token: { type: string, maxLength: 8, pattern: "^[A-Z2-9]{8}$" }
+        qr_payload: { type: string }
+        expires_at: { type: string, format: date-time, description: "10 phút sau khi tạo" }
+    ResetType:
+      type: string
+      description: Cùng bộ loại với Tuya.
+      enum:
+        - factory
+        - remote_unactive
+        - local_unactive
+        - remote_factory
+        - data_factory
+    ActivateRequest:
+      type: object
+      required: [t, token, uuid, authkey, product_key, sw_ver, pv, platform]
+      properties:
+        t: { type: integer, format: int64, description: "ms; lệch giờ server không quá 5 phút" }
+        token: { type: string, description: "Token ghép đôi, tối đa 8 ký tự" }
+        uuid: { type: string, format: uuid, description: "Mã cài đặt, sinh lần đầu bật Camera mode" }
+        authkey:
+          type: string
+          minLength: 32
+          maxLength: 32
+          description: "32 ký tự ngẫu nhiên sinh cùng lúc với uuid, lưu trong kho khóa; chứng minh danh tính khi kích hoạt lại"
+        product_key: { type: string, description: "PID: loại sản phẩm, ví dụ `phone-camera`" }
+        sw_ver: { type: string, example: "0.1.0" }
+        pv: { type: string, description: "Phiên bản giao thức", example: "1.0" }
+        bv: { type: string, description: "Phiên bản nền (baseline)", example: "1.0" }
+        platform: { type: string, enum: [android, ios] }
+        name: { type: string, maxLength: 64 }
+    ActivateResponse:
+      type: object
+      required: [devid, seckey, localkey]
+      properties:
+        devid: { type: string, format: uuid }
+        seckey: { type: string, minLength: 16, maxLength: 16, description: "Ký yêu cầu REST và sinh mật khẩu MQTT" }
+        localkey: { type: string, minLength: 16, maxLength: 16, description: "Dành cho đường LAN sau này; chưa dùng trong v1" }
+        reset_factory: { type: boolean, description: "Cloud yêu cầu thiết bị xóa dữ liệu cục bộ rồi kích hoạt lại" }
+        camera: { $ref: "#/components/schemas/Camera" }
+    Capability:
+      type: object
+      required: [name, v]
+      properties:
+        name:
+          type: string
+          pattern: "^[a-z0-9]+(\\.[a-z0-9_]+)*$"
+          examples: ["video.h264", "audio.opus", "speaker", "torch", "ptz"]
+        v: { type: integer, minimum: 1 }
+        params: { type: object, additionalProperties: true }
+    DeviceInfo:
+      type: object
+      required: [t, sw_ver, capabilities]
+      properties:
+        t: { type: integer, format: int64 }
+        sw_ver: { type: string }
+        pv: { type: string }
+        timezone: { type: string, example: "Asia/Ho_Chi_Minh" }
+        capabilities:
+          type: array
+          items: { $ref: "#/components/schemas/Capability" }
+        dps:
+          $ref: "#/components/schemas/DpMap"
+    DynamicConfig:
+      type: object
+      required: [server_time, heartbeat_s, mqtt_url]
+      properties:
+        server_time: { type: integer, format: int64, description: "ms; thiết bị tính độ lệch đồng hồ" }
+        heartbeat_s: { type: integer, example: 60, description: "Keepalive MQTT" }
+        mqtt_url:
+          type: string
+          example: "mqtts://mq-2.sg.example.invalid:8883"
+          description: |
+            Địa chỉ **Server MQTT dành riêng cho thiết bị này** (shard theo `devid`, xem `ARCHITECTURE.md` mục 3.2).
+            Thiết bị nối vào đúng địa chỉ này. Nếu nối thất bại thì gọi lại `PUT /devices/{devid}/info` để nhận địa chỉ mới.
+        resolution_cap: { type: string, enum: ["360p", "480p", "720p"] }
+        timezone: { type: string }
+    MqttAccessConfig:
+      type: object
+      required: [url, client_id, username, password, expire_time, topic]
+      properties:
+        url:
+          type: string
+          example: "mqtts://mq-1.sg.example.invalid:8883"
+          description: Server MQTT của shard chứa `uid` này (không phải shard của camera)
+        client_id: { type: string }
+        username: { type: string }
+        password: { type: string }
+        expire_time: { type: integer, description: "Giây sống kể từ lúc cấp (mặc định 7200)" }
+        topic:
+          type: object
+          required: [user]
+          properties:
+            user:
+              type: object
+              properties:
+                sub: { type: string, example: "cam/user/{uid}" }
+
+    # ------------------------------------------------------------ camera
+    Camera:
+      type: object
+      required: [id, name, owner_id, role, state]
+      properties:
+        id: { type: string, format: uuid, description: "Bằng devid" }
+        name: { type: string }
+        owner_id: { type: string, format: uuid }
+        role: { type: string, enum: [owner, viewer], description: "Vai của người gọi API" }
+        state: { type: string, enum: [offline, online, in_session, revoked] }
+        platform: { type: string, enum: [android, ios] }
+        capabilities:
+          type: array
+          items: { $ref: "#/components/schemas/Capability" }
+        max_viewers: { type: integer }
+        viewers: { type: integer }
+        show_ads: { type: boolean, description: "Viewer có thấy quảng cáo với camera này (theo gói của chủ)" }
+        last_seen_at: { type: [string, "null"], format: date-time }
+
+    # ------------------------------------------------------------ chia sẻ
+    Invite:
+      type: object
+      required: [token, url, expires_at]
+      properties:
+        token: { type: string, description: "128 bit ngẫu nhiên, base64url; chỉ hiển thị một lần" }
+        url: { type: string, format: uri }
+        expires_at: { type: string, format: date-time }
+    Share:
+      type: object
+      required: [camera_id, user_id, status]
+      properties:
+        camera_id: { type: string, format: uuid }
+        user_id: { type: string, format: uuid }
+        email: { type: string, format: email }
+        status: { type: string, enum: [active, suspended], description: "suspended khi gói hạ cấp" }
+        created_at: { type: string, format: date-time }
+
+    # ------------------------------------------------------------ phiên
+    IceServer:
+      type: object
+      required: [urls]
+      properties:
+        urls:
+          type: array
+          items: { type: string }
+        username: { type: string, description: "TURN REST: <hết hạn Unix s>:<sessionid>" }
+        credential: { type: string, description: "base64(HMAC-SHA1(secret, username))" }
+        expires_at: { type: string, format: date-time }
+    IceTokens:
+      type: object
+      description: Giống ba trường `token`, `udp_token`, `tcp_token` trong thông điệp offer của Tuya.
+      required: [token]
+      properties:
+        token:
+          type: array
+          items: { $ref: "#/components/schemas/IceServer" }
+          description: STUN/TURN chung
+        udp_token:
+          type: array
+          items: { $ref: "#/components/schemas/IceServer" }
+          description: Relay UDP
+        tcp_token:
+          type: array
+          items: { $ref: "#/components/schemas/IceServer" }
+          description: Relay TCP/TLS (443), dùng khi mạng chặn UDP
+    SessionCreate:
+      type: object
+      required: [camera_id]
+      properties:
+        camera_id: { type: string, format: uuid }
+        stream_type:
+          type: integer
+          description: "0 = xem trực tiếp (live). Phát lại để dành."
+          default: 0
+        max_resolution: { type: string, enum: ["360p", "480p", "720p"] }
+    Session:
+      type: object
+      required: [sessionid, camera_id, state, ice]
+      properties:
+        sessionid: { type: string, format: uuid }
+        camera_id: { type: string, format: uuid }
+        state: { type: string, enum: [waking, negotiating, connected, closing, closed] }
+        ice: { $ref: "#/components/schemas/IceTokens" }
+        resolution_cap: { type: string, enum: ["360p", "480p", "720p"] }
+        close_reason: { $ref: "#/components/schemas/CloseReason" }
+    CloseReason:
+      type: string
+      enum:
+        - user_ended
+        - camera_ended
+        - access_revoked
+        - preempted
+        - camera_offline
+        - camera_busy
+        - overheated
+        - low_battery
+        - timeout_waking
+        - timeout_ice
+        - insecure_sdp
+        - token_expired
+        - server_shutdown
+        - error
+    ConnectionType:
+      type: string
+      enum: [p2p_host, p2p_srflx, relay_udp, relay_tcp, relay_tls]
+    SessionReport:
+      type: object
+      required: [t, role, connection_type, ice_connected_ms]
+      properties:
+        t: { type: integer, format: int64 }
+        role: { type: string, enum: [camera, viewer] }
+        connection_type: { $ref: "#/components/schemas/ConnectionType" }
+        ice_connected_ms: { type: integer, description: "Từ lúc gửi/nhận offer đến ICE connected" }
+        first_frame_ms: { type: integer, description: "Từ lúc gửi video.start đến khung hình đầu (viewer)" }
+        avg_bitrate_kbps: { type: integer }
+        avg_rtt_ms: { type: integer }
+        packet_loss_pct: { type: number }
+        cpu_pct_avg: { type: number, description: "Chỉ camera" }
+        temp_state: { type: string, enum: [normal, warm, hot], description: "Chỉ camera" }
+        viewers_at_end: { type: integer }
+        duration_s: { type: integer }
+        close_reason: { $ref: "#/components/schemas/CloseReason" }
+        network_type: { type: string, enum: [wifi, cellular, ethernet, unknown] }
+
+    # ------------------------------------------------------------ Data Point (DP)
+    DpMap:
+      type: object
+      description: |
+        Bản đồ DP theo kiểu Tuya: khóa là **số hiệu DP dạng chuỗi**, giá trị theo kiểu của DP.
+        Bảng số hiệu của dự án này ở `PROTOCOL.md` mục 9. Số hiệu lạ phải được bỏ qua.
+      additionalProperties: true
+      examples:
+        - { "101": true, "103": 3, "105": 88 }
+
+    # ------------------------------------------------------------ MQTT
+    MqHeader:
+      type: object
+      description: |
+        Phần `header` kiểu Tuya (`from`, `to`, `sessionid`, `type`, `trace_id`, `security_level`),
+        thêm `v` (phiên bản giao thức), `ts` (ms) và `id` (khử trùng lặp vì QoS 1 có thể giao hai lần).
+      required: [v, from, to, type, ts]
+      properties:
+        v: { type: integer, const: 1 }
+        id: { type: string, format: uuid }
+        from: { type: string, description: "devid hoặc uid của bên gửi" }
+        to: { type: string, description: "devid hoặc uid của bên nhận" }
+        sessionid: { type: string, format: uuid, description: "Bắt buộc với offer, answer, candidate, disconnect" }
+        type: { type: string }
+        trace_id: { type: string }
+        ts: { type: integer, format: int64 }
+        security_level:
+          type: integer
+          const: 3
+          description: |
+            Chỉ chấp nhận 3 trong v1, nghĩa là **DTLS-SRTP bắt buộc**. Lưu ý: số 3 của Tuya mang nghĩa khác
+            (AES-CBC + HMAC-SHA1 trên KCP). Dự án này chỉ mượn tên trường.
+    MqEnvelope:
+      type: object
+      required: [header, msg]
+      properties:
+        header: { $ref: "#/components/schemas/MqHeader" }
+        msg: { type: object }
+
+    # ------------------------------------------------------------ log theo yêu cầu
+    LogRequestCreate:
+      type: object
+      required: [target]
+      properties:
+        target:
+          type: object
+          required: [type, id]
+          properties:
+            type: { type: string, enum: [camera, app] }
+            id:
+              type: string
+              format: uuid
+              description: "camera_id (type=camera) hoặc user_id (type=app)"
+        level: { type: string, enum: [debug, info, warn, error], default: info }
+        since_minutes: { type: integer, minimum: 1, maximum: 1440, default: 30 }
+        max_bytes: { type: integer, minimum: 1024, maximum: 20971520, default: 5242880 }
+        reason: { type: string, maxLength: 200 }
+    LogRequest:
+      type: object
+      required: [request_id, target, state, expires_at]
+      properties:
+        request_id: { type: string, format: uuid }
+        target:
+          type: object
+          required: [type, id]
+          properties:
+            type: { type: string, enum: [camera, app] }
+            id: { type: string, format: uuid }
+        state:
+          type: string
+          enum: [pending, delivered, uploading, done, failed, expired]
+        initiator: { type: string, enum: [owner, user, support] }
+        size_bytes: { type: integer }
+        error: { type: string }
+        created_at: { type: string, format: date-time }
+        expires_at: { type: string, format: date-time }
+    LogComplete:
+      type: object
+      required: [t, ok]
+      properties:
+        t: { type: integer, format: int64 }
+        ok: { type: boolean }
+        size_bytes: { type: integer }
+        sha256: { type: string, description: "hex của tệp gzip đã tải lên" }
+        lines: { type: integer }
+        error: { type: string, description: "Khi ok=false: no_logs, too_large, upload_failed, declined" }
+
+    MqLogRequest:
+      description: |
+        Server → camera hoặc app. Xin gửi log lên. Bên nhận **PHẢI** che token, khóa, email và mọi dữ liệu nhạy cảm,
+        **không** đưa nội dung media vào log, nén gzip định dạng NDJSON (mỗi dòng một JSON: `ts`, `lvl`, `comp`, `msg`,
+        `trace_id`, `sessionid`). App có thể hiện thông báo cho người dùng khi nhận yêu cầu do hỗ trợ tạo.
+      allOf:
+        - $ref: "#/components/schemas/MqEnvelope"
+        - type: object
+          properties:
+            header:
+              type: object
+              properties:
+                type: { const: log.request }
+            msg:
+              type: object
+              required: [request_id, level, since_ms, max_bytes, upload_url, upload_expires_at]
+              properties:
+                request_id: { type: string, format: uuid }
+                level: { type: string, enum: [debug, info, warn, error] }
+                since_ms: { type: integer, format: int64, description: "Lấy log từ mốc này" }
+                max_bytes: { type: integer }
+                upload_url: { type: string, format: uri, description: "URL có chữ ký, dùng HTTP PUT một lần" }
+                upload_expires_at: { type: string, format: date-time }
+                format: { type: string, enum: [ndjson.gz], default: ndjson.gz }
+                initiator: { type: string, enum: [owner, user, support] }
+
+    MqOffer:
+      description: |
+        Viewer → camera (qua REST rồi MQTT). **Viewer là bên tạo offer** (giống app của Tuya). Mang kèm thông tin ICE.
+        SDP phải có `a=fingerprint:sha-256`; viewer ở `recvonly` cho video/audio, có phần `application` cho DataChannel.
+      allOf:
+        - $ref: "#/components/schemas/MqEnvelope"
+        - type: object
+          properties:
+            header:
+              type: object
+              properties:
+                type: { const: offer }
+            msg:
+              type: object
+              required: [sdp, token]
+              properties:
+                sdp: { type: string }
+                token:
+                  type: array
+                  items: { $ref: "#/components/schemas/IceServer" }
+                udp_token:
+                  type: array
+                  items: { $ref: "#/components/schemas/IceServer" }
+                tcp_token:
+                  type: array
+                  items: { $ref: "#/components/schemas/IceServer" }
+                stream_type: { type: integer, default: 0 }
+                mode: { type: string }
+                preconnect: { type: boolean }
+
+    MqAnswer:
+      description: Camera → viewer (ghi lên out-topic, server chuyển cho viewer). Camera chỉ trả lời sau khi kiểm SDP.
+      allOf:
+        - $ref: "#/components/schemas/MqEnvelope"
+        - type: object
+          properties:
+            header:
+              type: object
+              properties:
+                type: { const: answer }
+            msg:
+              type: object
+              required: [sdp]
+              properties:
+                sdp: { type: string }
+
+    MqCandidate:
+      description: Hai chiều. Một candidate ICE (trickle). `candidate` rỗng báo hết.
+      allOf:
+        - $ref: "#/components/schemas/MqEnvelope"
+        - type: object
+          properties:
+            header:
+              type: object
+              properties:
+                type: { const: candidate }
+            msg:
+              type: object
+              required: [candidate]
+              properties:
+                candidate: { type: string }
+                sdp_mid: { type: [string, "null"] }
+                sdp_mline_index: { type: [integer, "null"] }
+
+    MqDisconnect:
+      description: Hai chiều. Kết thúc phiên. Một `offer` mới cho cùng cặp cũng hủy phiên cũ.
+      allOf:
+        - $ref: "#/components/schemas/MqEnvelope"
+        - type: object
+          properties:
+            header:
+              type: object
+              properties:
+                type: { const: disconnect }
+            msg:
+              type: object
+              required: [reason]
+              properties:
+                reason: { $ref: "#/components/schemas/CloseReason" }
+
+    MqError:
+      description: Hai chiều. Báo lỗi cho một thông điệp trước (cùng `sessionid` hoặc `id`).
+      allOf:
+        - $ref: "#/components/schemas/MqEnvelope"
+        - type: object
+          properties:
+            header:
+              type: object
+              properties:
+                type: { const: error }
+            msg:
+              type: object
+              required: [error]
+              properties:
+                handle: { type: string, description: "id của thông điệp gây lỗi" }
+                error: { $ref: "#/components/schemas/ErrorCode" }
+                seq: { type: integer }
+                detail: { type: string }
+
+    MqDpReport:
+      description: Camera → server. Báo giá trị DP đổi (pin, nhiệt, số viewer, `max_viewers`…).
+      allOf:
+        - $ref: "#/components/schemas/MqEnvelope"
+        - type: object
+          properties:
+            header:
+              type: object
+              properties:
+                type: { const: dp.report }
+            msg:
+              type: object
+              required: [dps, t]
+              properties:
+                dps: { $ref: "#/components/schemas/DpMap" }
+                t: { type: integer, format: int64 }
+
+    MqDpSet:
+      description: Server → camera. Đặt giá trị DP (ví dụ giới hạn độ phân giải theo gói).
+      allOf:
+        - $ref: "#/components/schemas/MqEnvelope"
+        - type: object
+          properties:
+            header:
+              type: object
+              properties:
+                type: { const: dp.set }
+            msg:
+              type: object
+              required: [dps, t]
+              properties:
+                dps: { $ref: "#/components/schemas/DpMap" }
+                t: { type: integer, format: int64 }
+
+    MqReset:
+      description: Server → camera. Lệnh đặt lại (chủ gỡ camera, hoặc cloud yêu cầu). Camera xóa dữ liệu kích hoạt.
+      allOf:
+        - $ref: "#/components/schemas/MqEnvelope"
+        - type: object
+          properties:
+            header:
+              type: object
+              properties:
+                type: { const: reset }
+            msg:
+              type: object
+              required: [type]
+              properties:
+                type: { $ref: "#/components/schemas/ResetType" }
+
+    # ------------------------------------------------------------ DataChannel "ctrl" (tương ứng kênh lệnh 0 của Tuya)
+    CtrlMessage:
+      type: object
+      description: |
+        Khung chung cho thông điệp DataChannel `ctrl` (có thứ tự, tin cậy). Tương ứng kênh lệnh số 0 của Tuya
+        (kênh 1 và 2 của Tuya là video và audio, ở đây là các track WebRTC). JSON UTF-8, tối đa 16 KiB.
+      required: [v, t]
+      properties:
+        v: { type: integer, const: 1 }
+        t: { type: string }
+        id: { type: string }
+        re: { type: string, description: "id của thông điệp đang trả lời" }
+        data: { type: object }
+
+    CtrlStreamCmd:
+      description: |
+        Viewer → camera. Bắt đầu/dừng từng luồng. Tương ứng `OnLiveVideoStart/Stop`, `OnLiveAudioStart/Stop`,
+        và (loa, từ app xuống thiết bị) `OnLiveAudioStart/Stop` của chế độ nói chuyện. **Camera chỉ mã hóa sau
+        `video.start`** để tiết kiệm CPU.
+      allOf:
+        - $ref: "#/components/schemas/CtrlMessage"
+        - type: object
+          required: [t, id]
+          properties:
+            t:
+              type: string
+              enum: [video.start, video.stop, audio.start, audio.stop, speaker.start, speaker.stop]
+
+    CtrlIframeRequest:
+      description: Viewer → camera. Xin khung I (tương ứng `OnRequestIFrame`). Gửi khi mới vào hoặc mất gói.
+      allOf:
+        - $ref: "#/components/schemas/CtrlMessage"
+        - type: object
+          required: [t]
+          properties:
+            t: { const: iframe.request }
+
+    CtrlBitrateSet:
+      description: Viewer → camera. Đặt bitrate (tương ứng `OnSetVideoBitrate`). Camera có thể hạ thấp hơn.
+      allOf:
+        - $ref: "#/components/schemas/CtrlMessage"
+        - type: object
+          required: [t, id, data]
+          properties:
+            t: { const: bitrate.set }
+            data:
+              type: object
+              required: [kbps]
+              properties:
+                kbps: { type: integer, minimum: 100, maximum: 2500 }
+
+    CtrlStreamSet:
+      description: Viewer → camera. Yêu cầu đổi độ phân giải hoặc fps.
+      allOf:
+        - $ref: "#/components/schemas/CtrlMessage"
+        - type: object
+          required: [t, id, data]
+          properties:
+            t: { const: stream.set }
+            data:
+              type: object
+              properties:
+                resolution: { type: string, enum: ["360p", "480p", "720p"] }
+                fps: { type: integer, minimum: 5, maximum: 30 }
+
+    CtrlTorchSet:
+      description: Viewer (chủ) → camera. Bật/tắt đèn (DP 101 theo cách thời gian thực).
+      allOf:
+        - $ref: "#/components/schemas/CtrlMessage"
+        - type: object
+          required: [t, id, data]
+          properties:
+            t: { const: torch.set }
+            data:
+              type: object
+              required: [enabled]
+              properties:
+                enabled: { type: boolean }
+
+    CtrlPtzMove:
+      description: Viewer (chủ) → camera có khả năng `ptz` (ví dụ zoom số).
+      allOf:
+        - $ref: "#/components/schemas/CtrlMessage"
+        - type: object
+          required: [t, id, data]
+          properties:
+            t: { const: ptz.move }
+            data:
+              type: object
+              properties:
+                pan: { type: number, minimum: -1, maximum: 1 }
+                tilt: { type: number, minimum: -1, maximum: 1 }
+                zoom: { type: number, minimum: 1, maximum: 8 }
+
+    CtrlStatus:
+      description: Camera → viewer, mỗi 5 giây hoặc khi đổi.
+      allOf:
+        - $ref: "#/components/schemas/CtrlMessage"
+        - type: object
+          required: [t, data]
+          properties:
+            t: { const: status }
+            data:
+              type: object
+              properties:
+                resolution: { type: string, enum: ["360p", "480p", "720p"] }
+                fps: { type: integer }
+                bitrate_kbps: { type: integer }
+                viewers: { type: integer }
+                max_viewers: { type: integer }
+                battery_pct: { type: integer }
+                charging: { type: boolean }
+                temp_state: { type: string, enum: [normal, warm, hot] }
+
+    CtrlError:
+      description: Hai chiều. Trả lỗi cho một lệnh (`re`).
+      allOf:
+        - $ref: "#/components/schemas/CtrlMessage"
+        - type: object
+          required: [t, re, data]
+          properties:
+            t: { const: error }
+            data:
+              type: object
+              required: [code]
+              properties:
+                code: { type: string, enum: [unsupported, forbidden, invalid_request, busy] }
+                detail: { type: string }
