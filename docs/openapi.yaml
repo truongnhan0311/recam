@@ -39,7 +39,7 @@ x-mqtt:
     - name: "cam/device/in/{devid}"
       direction: server→camera
       subscribe: [device]
-      messages: [MqOffer, MqCandidate, MqDisconnect, MqDpSet, MqReset, MqLogRequest, MqError]
+      messages: [MqOffer, MqCandidate, MqDisconnect, MqDpSet, MqReset, MqLogRequest, MqMigrate, MqError]
     - name: "cam/device/out/{devid}"
       direction: camera→server
       publish: [device]
@@ -1325,6 +1325,28 @@ components:
               required: [reason]
               properties:
                 reason: { $ref: "#/components/schemas/CloseReason" }
+
+    MqMigrate:
+      description: |
+        Server → camera qua `cam/device/in/{devid}` trên shard cũ. Yêu cầu chuyển sang shard MQTT khác
+        (`ARCHITECTURE.md` mục 3.2.1). Camera đợi hết phiên xem (tối đa `deadline_s`), nối `mqtt_url` mới trước,
+        publish presence online retained ở đó, xóa presence retained ở node cũ rồi DISCONNECT bình thường
+        (Last Will không phát). Quá hạn thì bỏ qua; lần khởi động sau camera nhận `mqtt_url` mới qua `PUT /devices/{devid}/info`.
+      allOf:
+        - $ref: "#/components/schemas/MqEnvelope"
+        - type: object
+          properties:
+            header:
+              type: object
+              properties:
+                type: { const: migrate }
+            msg:
+              type: object
+              required: [mqtt_url, reason, deadline_s]
+              properties:
+                mqtt_url: { type: string, format: uri, description: "Địa chỉ broker của shard mới" }
+                reason: { type: string, enum: [rebalance, drain] }
+                deadline_s: { type: integer, minimum: 60, maximum: 3600, default: 600 }
 
     MqSessionState:
       description: |

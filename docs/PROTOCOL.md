@@ -161,6 +161,7 @@ Xem mục 7 (trình tự) và mục 8 (lệnh DataChannel).
 - Cấu hình MQTT của app hết hạn sau `expire_time`: làm mới theo mục 3.4.
 - Thông tin TURN trong phiên hết hạn sau 10 phút: `POST /sessions/{id}/turn-credentials` trước khi hết hạn khoảng 60 giây.
 - Phiên bản: `min_app_version` mới → app cũ nhận `426` và PHẢI báo cập nhật (tương ứng `UPGRADE_NOTIFY`). Cấu hình đổi (ví dụ giới hạn độ phân giải theo gói) đến qua `dp.set`.
+- Nhận `migrate` khi ở `MQTT_YIELD`: chuyển shard theo `ARCHITECTURE.md` mục 3.2.1, không đổi trạng thái hiển thị và không cắt phiên đang xem.
 - Mất kết nối MQTT khi đang có phiên: **phiên media không đứt** (đã đi P2P/TURN), nhưng không tạo phiên mới được cho tới khi nối lại.
 
 ### Giai đoạn 10 — Đặt lại và gỡ
@@ -208,6 +209,7 @@ QoS 1 có thể giao hai lần. Mọi thông điệp có `header.id`; bên nhậ
 | `dp.set` | server → camera | `dps`, `t` |
 | `reset` | server → camera | `type` (enum `ResetType`) |
 | `log.request` | server → camera/app | xem mục 10 |
+| `migrate` | server → camera | `mqtt_url`, `reason` (`rebalance`, `drain`), `deadline_s`. Chuyển sang shard MQTT khác: đợi hết phiên xem, nối node mới trước, xóa presence retained ở node cũ rồi ngắt êm (`ARCHITECTURE.md` mục 3.2.1) |
 | `session.state` | server → viewer | `sessionid`, `state` (`negotiating`, `closed`), `close_reason` khi `closed`. Báo viewer camera đã thức (sau `202 waking`) hoặc phiên bị đóng phía server |
 
 Thông điệp có `type` lạ: bỏ qua và trả `error` `invalid_request`. Trường lạ: bỏ qua.

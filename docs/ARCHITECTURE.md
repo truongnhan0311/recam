@@ -155,7 +155,28 @@ Vấn đề của cụm: camera chỉ nối vào **một** node broker. Muốn g
 
 Cách giải (không cần broker có cụm sẵn):
 - **Nguồn quyết định là CSDL** (`device.mq_node`). Băm nhất quán `consistent_hash(devid)` trên danh sách node đang sống **chỉ dùng khi gán**: lần đầu thiết bị lấy `mqtt_url`, hoặc khi node đã ghi trong CSDL không còn sống. Kết quả gán được ghi lại vào CSDL.
-- Node cũ sống lại **không** kéo thiết bị về (tránh dồn kết nối lại hàng loạt). Cân bằng lại tải chỉ làm chủ động, từng đợt nhỏ (đổi `mq_node` rồi báo thiết bị nối lại); cách báo chưa thiết kế, để S3.
+- Node cũ sống lại **không** kéo thiết bị về (tránh dồn kết nối lại hàng loạt). Cân bằng lại tải chỉ làm chủ động, theo mục 3.2.1.
+
+#### 3.2.1 Cân bằng lại tải chủ động (chuyển thiết bị sang shard khác)
+
+**Khi nào chạy:** thêm node broker mới; rút một node để bảo trì; một shard giữ hơn khoảng 1,2 lần số kết nối trung bình. Băm nhất quán dùng **nút ảo**, nên thêm node chỉ cần chuyển khoảng 1/N thiết bị.
+
+**Chuyển một camera (nối node mới trước, ngắt node cũ sau):**
+1. `cam-api` ghi node mới vào `device.mq_node_pending`. `mq_node` cũ **vẫn là nguồn quyết định**, mọi lệnh vẫn gửi qua node cũ.
+2. `cam-api` gửi `migrate` (`MqMigrate`) qua `cam/device/in/{devid}` trên node cũ: `mqtt_url` mới, `reason`, `deadline_s`.
+3. Camera đang có phiên xem thì **đợi phiên kết thúc** (tối đa `deadline_s`, mặc định 600 giây). Không cắt video đang xem.
+4. Camera nối vào node mới, đăng ký `cam/device/in/{devid}`, đặt Last Will, publish presence `online` (retained).
+5. Trên node cũ, camera publish payload rỗng retained lên `cam/presence/{devid}` (xóa bản retained), rồi gửi DISCONNECT bình thường, nên Last Will **không** phát và không có "offline" giả.
+6. Khi `cam-api` thấy presence `online` ở node mới: `mq_node = mq_node_pending`, xóa `mq_node_pending`. Từ đây lệnh đi qua node mới.
+
+**An toàn:**
+- Mỗi phút chuyển tối đa khoảng **1% thiết bị của một shard**, mỗi thiết bị có thời gian chờ ngẫu nhiên, tránh bão kết nối lại.
+- Không chuyển thiết bị đang có phiên xem (bước 3).
+- Quá `deadline_s` mà camera chưa chuyển: **không ép**. `cam-api` xóa `mq_node_pending`. Lần khởi động sau camera gọi `PUT /devices/{devid}/info` và nhận `mqtt_url` theo lần gán mới.
+- `cam-api` **bỏ qua** presence đến từ shard khác `mq_node` (và khác `mq_node_pending` khi đang chuyển), nên bản retained cũ còn sót không làm sai hiện diện.
+- Rút node để bảo trì: chuyển hết thiết bị như trên rồi mới tắt; thiết bị không kịp chuyển sẽ nối lại theo cách "mất một node" ở trên.
+
+**App xem:** không cần thông điệp riêng. Cấu hình MQTT của app hết hạn sau 2 giờ (`PROTOCOL.md` mục 3.4); lần xin mới trỏ sang shard mới.
 - Địa chỉ broker **không** cố định trong app. Nó đến từ API: camera nhận `mqtt_url` trong `PUT /devices/{devid}/info` (giống `mqttsSelfUrl` của Tuya); app xem nhận `url` trong `POST /mqtt/access-config` (shard của `uid`).
 - Mất một node: thiết bị nối lại thất bại → hỏi API lấy `mqtt_url` mới (shard được gán lại) → nối vào node khác. Broker mới có hàng đợi trống, nên thông điệp đang bay có thể mất; phiên đang bay hết hạn theo thời hạn pha (PROTOCOL.md 7.2).
 - Nếu sau này chọn broker có cụm sẵn thì **bỏ phần shard**, mọi node nhận mọi chủ đề.
@@ -345,6 +366,6 @@ flowchart TB
 | 1 | `mochi-mqtt` chưa xác minh về cụm, bảo trì (bản mới nhất 2025-03-01), tải thực tế | Thử ở S3; phương án dự phòng: viết broker tối giản bằng Go hoặc chấp nhận một broker ngoài Go (cần bạn quyết định vì lệch chỉ đạo Go-only) |
 | 2 | `pion/turn` chưa đo tải so với coturn | Đo ở S7; coturn là phương án dự phòng (viết bằng C, cũng lệch Go-only) |
 | 3 | `cam-api` đăng ký `out/+` trên **mọi** shard: số kết nối API × shard tăng nhanh | Đo ở S3; có thể dùng đăng ký chia sẻ của MQTT 5 nếu broker hỗ trợ (chưa xác minh) |
-| 4 | Shard bị lệch tải hoặc mất node: cách gán lại | **Đã chốt (mục 3.2):** CSDL `mq_node` là nguồn quyết định, băm nhất quán chỉ dùng khi gán; node sống lại không kéo thiết bị về. Còn mở: cách cân bằng lại tải chủ động (S3) |
+| 4 | Shard bị lệch tải hoặc mất node: cách gán lại | **Đã chốt (mục 3.2):** CSDL `mq_node` là nguồn quyết định, băm nhất quán chỉ dùng khi gán; node sống lại không kéo thiết bị về. Cân bằng lại tải chủ động: mục 3.2.1. Còn đo ở S3: thời gian chuyển một đợt |
 | 5 | Hiện diện: lấy từ `presence` retained, hay đồng bộ vào Valkey | **Đã chốt (mục 3.1):** retained MQTT là nguồn gốc, Valkey là bản sao để đọc nhanh |
 | 6 | Cần vẽ thêm sơ đồ cho luồng chia sẻ, thanh toán, log theo yêu cầu | Log đã có ở `PROTOCOL.md` mục 10; chia sẻ và thanh toán vẽ ở S11, S14 |

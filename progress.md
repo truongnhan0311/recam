@@ -28,7 +28,7 @@
 
 ## Open issues
 - `make proto-check` chưa chạy lại trên bản v0.3.1 (phiên cloud chặn tải Go 1.26); đã kiểm bằng script Python tương đương.
-- Cân bằng lại tải shard chủ động chưa thiết kế (S3).
+- Cân bằng lại tải shard: đã thiết kế (`ARCHITECTURE.md` 3.2.1, `MqMigrate`); chưa đo thời gian chuyển một đợt và chi phí `cam-api` đăng ký `cam/presence/+` trên mọi shard (S3).
 - Chưa ai xem xét thiết kế; mọi con số (nhịp tim, thời hạn, bậc chất lượng, công thức `max_viewers`) là đề xuất.
 - Chưa có endpoint bật/tắt "cho phép hỗ trợ xem log".
 - libwebrtc có thể mã hóa riêng cho mỗi PeerConnection → `max_viewers` có thể thấp hơn kỳ vọng.
