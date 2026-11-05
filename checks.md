@@ -18,7 +18,6 @@ Phiên bản đang kiểm: S1 v0.3 (bám sát Tuya, MQTT, giao thức log, kiế
 | S1 | Điểm D1 (DTLS-SRTP thay vì AES-trong-SDP) được người phụ trách xác nhận | pass | Người phụ trách chọn "dùng bản tiêu chuẩn WebRTC" (2026-11-05); đã ghi vào `PROTOCOL.md` mục 1.2 |
 | S1 | Nội dung giao thức đúng và đủ về mặt thiết kế | unresolved | Chưa có người xem xét; chưa có cài đặt nào kiểm chứng. Xem `PROTOCOL.md` mục 15 |
 | S1 | Mô hình quyền và giới hạn gói khớp với quyết định của người phụ trách (mục 11 của plan) | unresolved | Các giả định mục 11 chưa được xác nhận |
-
 | S1 v0.3.1 | Sửa 6 lỗ hổng khi đọc lại: (1) talkback cần đàm phán lại SDP, (2) viewer không biết camera đã thức sau `202 waking`, (3) dò token ghép đôi, (4) shard mâu thuẫn băm/CSDL, (5) hiện diện ghi hai nguồn, (6) `camera_offline` dùng cho timeout answer | pass (về tài liệu) | Đã sửa `PROTOCOL.md`, `openapi.yaml` (thêm `MqSessionState`, `timeout_answer`), `ARCHITECTURE.md`, `plan.md`. Kiểm bằng script Python tương đương (`yaml` parse, mọi `$ref` trỏ đúng, 30 thao tác có lỗi 4xx/5xx, 10 `Mq*` kế thừa `MqEnvelope`, `x-mqtt` đủ schema, 10 giai đoạn); thử phá (đổi tên `MqSessionState`) thì script báo lỗi đúng |
 | S1 v0.3.1 | `make proto-check` (Go) chạy lại trên bản mới | unresolved | Phiên cloud chặn lệnh vì phải tải toolchain Go 1.26 và module. **Cần chạy lại trên máy có Go** |
 | S1 v0.3.1 | Sơ đồ trình tự mục 7 `PROTOCOL.md` (thêm 3 dòng `session.state`) render được | unresolved | Chưa chạy mermaid-cli lại; cú pháp chỉ dùng mũi tên và chữ thường, không có `;` |
