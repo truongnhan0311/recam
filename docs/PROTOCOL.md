@@ -134,7 +134,7 @@ Trạng thái phía server suy ra từ hiện diện: `offline`, `online`, `in_s
 Lần đầu bật Camera mode, sinh `uuid` và `authkey`, cất vào kho khóa. Mất app thì mất danh tính; camera cũ trên server ở trạng thái `offline` cho tới khi chủ gỡ.
 
 ### Giai đoạn 2 — Ghép đôi
-Chủ gọi `POST /pairing-tokens` nhận `token` (tối đa 8 ký tự, **sống 10 phút, dùng một lần**) và `qr_payload`. Điện thoại camera quét QR hoặc nhập tay. Nếu camera chạy trong cùng app đã đăng nhập thì app tự gọi endpoint và dùng ngay. Sai quá 5 lần khi kích hoạt thì token bị khóa. Sự kiện: `BIND_START`, `BIND_TOKEN_ON`.
+Chủ gọi `POST /pairing-tokens` nhận `token` (**đúng 8 ký tự** từ bảng `A-Z2-9`, khoảng 41 bit; **sống 10 phút, dùng một lần**) và `qr_payload`. Điện thoại camera quét QR hoặc nhập tay. Nếu camera chạy trong cùng app đã đăng nhập thì app tự gọi endpoint và dùng ngay. Sai quá 5 lần khi kích hoạt thì token bị khóa. **Chống dò token** (giới hạn theo token không chặn được kẻ thử nhiều token khác nhau): `POST /devices/activate` còn bị giới hạn **10 lần sai/giờ cho mỗi IP** và **5 lần sai/10 phút cho mỗi `uuid`**, vượt thì `429 rate_limited`; mọi lần sai được ghi kiểm toán. Sự kiện: `BIND_START`, `BIND_TOKEN_ON`.
 
 ### Giai đoạn 3 — Tìm địa chỉ
 `POST /url_config {region, env, keys:[httpsSelfUrl, mqttsSelfUrl]}` trả địa chỉ API và MQTT của vùng, cùng `min_app_version` và `proto_versions`. App cũ hơn `min_app_version` nhận `426 unsupported_version`.
@@ -208,6 +208,7 @@ QoS 1 có thể giao hai lần. Mọi thông điệp có `header.id`; bên nhậ
 | `dp.set` | server → camera | `dps`, `t` |
 | `reset` | server → camera | `type` (enum `ResetType`) |
 | `log.request` | server → camera/app | xem mục 10 |
+| `session.state` | server → viewer | `sessionid`, `state` (`negotiating`, `closed`), `close_reason` khi `closed`. Báo viewer camera đã thức (sau `202 waking`) hoặc phiên bị đóng phía server |
 
 Thông điệp có `type` lạ: bỏ qua và trả `error` `invalid_request`. Trường lạ: bỏ qua.
 
@@ -232,8 +233,11 @@ sequenceDiagram
         S-->>V: 202 Session (waking)
         S->>C: push wake (FCM hoặc APNs)
         C->>B: nối MQTT, publish presence online
+        B->>S: presence online
+        S->>B: publish cam/user/uid (session.state negotiating)
+        B->>V: session.state negotiating
     end
-    V->>V: tạo offer (recvonly video và audio, DataChannel ctrl)
+    V->>V: tạo offer (video recvonly, audio sendrecv, DataChannel ctrl)
     V->>S: POST /sessions/id/signal (offer)
     S->>B: publish cam/device/in/devid (offer)
     B->>C: offer
@@ -280,16 +284,17 @@ sequenceDiagram
 
 | Pha | Hạn | Hết hạn thì |
 |---|---|---|
-| `waking` | 15 giây | đóng, `timeout_waking` |
-| offer → answer | 10 giây | đóng, `camera_offline` |
+| `waking` | 15 giây | đóng, `timeout_waking`. Camera thức kịp thì server gửi `session.state` `negotiating` qua `cam/user/{uid}`; viewer chỉ gửi `offer` sau thông điệp này. Dự phòng khi MQTT của viewer chưa nối: hỏi `GET /sessions/{id}` mỗi 2 giây |
+| offer → answer | 10 giây | đóng, `timeout_answer` (camera vẫn có thể online, nên không dùng `camera_offline`) |
 | ICE đến `connected` | 20 giây | đóng, `timeout_ice` |
 
 ### 7.3 SDP bắt buộc
-- Viewer là bên **offer**: video `recvonly`, audio `recvonly` (talkback bật sau, mục 8), có phần `m=application` cho DataChannel `ctrl` (có thứ tự, tin cậy).
+- Viewer là bên **offer**: video `recvonly`; audio **`sendrecv`** nếu camera khai `speaker` trong `capabilities`, ngược lại `recvonly`; có phần `m=application` cho DataChannel `ctrl` (có thứ tự, tin cậy). Với audio `sendrecv`, viewer **chưa gắn track micro** (transceiver không có track, không gửi gì) cho tới `speaker.start` (mục 8).
+- **v1 không đàm phán lại SDP trong một phiên.** Mọi thay đổi luồng (talkback, độ phân giải, bitrate) đi bằng lệnh `ctrl`.
 - Offer **PHẢI** có `a=fingerprint:sha-256`, `a=setup:actpass`. Thiếu thì server từ chối ở `POST /sessions/{id}/signal` (`400 insecure_sdp`) và camera cũng tự kiểm, **không** trả answer.
 - Video **H.264 Constrained Baseline** `profile-level-id=42e01f`, `packetization-mode=1`. Audio **Opus** 48 kHz, `useinbandfec=1`.
 - ICE trickle (`a=ice-options:trickle`). Thông tin ICE lấy từ `token`, `udp_token`, `tcp_token`.
-- Một `offer` mới cho cùng cặp viewer-camera hủy phiên cũ (giống Tuya).
+- Một `offer` với **`sessionid` mới** cho cùng cặp viewer-camera hủy phiên cũ (giống Tuya). `offer` thứ hai trong **cùng** `sessionid` bị từ chối bằng `error` `conflict`.
 
 ### 7.4 Thông tin TURN
 Theo TURN REST: `username = "<hết hạn Unix giây>:<sessionid>"`, `credential = base64(HMAC-SHA1(secret, username))`, sống 10 phút. `udp_token` là relay UDP, `tcp_token` là relay TCP/TLS cổng 443 cho mạng chặn UDP.
@@ -314,6 +319,7 @@ Nhãn `ctrl`, có thứ tự, tin cậy, JSON UTF-8 tối đa 16 KiB. Khung: `{"
 | `error` | hai chiều | `code`: `unsupported`, `forbidden`, `invalid_request`, `busy` | |
 
 - **Camera chỉ bắt đầu mã hóa sau `video.start`**, và dừng khi hết viewer. Việc này tiết kiệm CPU và pin.
+- **Talkback** (`speaker.start`): viewer gắn track micro vào transceiver audio đã có bằng `replaceTrack`, không đàm phán lại; camera bắt đầu phát ra loa. `speaker.stop`: viewer gỡ track (`replaceTrack(null)`). Camera không có `speaker` thì trả `error` `unsupported`.
 - Người được chia sẻ chỉ **xem** (và nói chuyện nếu chủ cho phép): lệnh `torch.set`, `ptz.move` của họ bị từ chối `forbidden`.
 - Phát lại video (playback của Tuya: `PB_VIDEO`, `PB_PAUSE`) **không có trong v1**.
 
@@ -395,11 +401,11 @@ sequenceDiagram
 1. **TLS ≥ 1.2** (ưu tiên 1.3) cho HTTPS và MQTT; HSTS. Chứng chỉ qua kho tin cậy của hệ điều hành, không nhúng CA cứng trong app.
 2. **Media**: DTLS-SRTP bắt buộc (D1). Offer/answer thiếu fingerprint bị từ chối.
 3. **Khóa thiết bị** (`authkey`, `seckey`, `localkey`) trong Keystore/Keychain. Phía server, `seckey` cần để kiểm chữ ký nên lưu mã hóa bằng KMS.
-4. **Ghép đôi**: token ≤ 8 ký tự, 10 phút, một lần, khóa sau 5 lần sai.
+4. **Ghép đôi**: token đúng 8 ký tự (`A-Z2-9`), 10 phút, một lần, khóa sau 5 lần sai; thêm giới hạn sai theo IP và theo `uuid` (mục 5, giai đoạn 2) để chống dò nhiều token.
 5. **Lời mời chia sẻ**: 128 bit ngẫu nhiên, một lần, 24 giờ, server chỉ lưu băm. Người nhận chỉ xem, không mời tiếp.
 6. **Quyền ở server**: kiểm theo `sub` của token hoặc `devid` của chữ ký, không tin dữ liệu từ app.
 7. **Không ghi log nội dung media**; log chỉ có mã phiên, loại kết nối, số đo tổng hợp.
-8. **Giới hạn tốc độ** (mặc định): đăng nhập 10/phút/IP; tạo phiên 20/phút/người; lời mời 10/giờ/camera; kích hoạt 5 lần sai/token.
+8. **Giới hạn tốc độ** (mặc định): đăng nhập 10/phút/IP; tạo phiên 20/phút/người; lời mời 10/giờ/camera; kích hoạt 5 lần sai/token, 10 lần sai/giờ/IP, 5 lần sai/10 phút/`uuid`.
 9. **Quảng cáo** chỉ phía Viewer, không đi qua MQTT hay DataChannel; hiển thị theo `show_ads` của camera.
 10. **Chống phát lại**: `t`/`X-Time` lệch tối đa 5 phút; `header.id` khử trùng lặp 60 giây.
 
@@ -420,7 +426,7 @@ sequenceDiagram
 | `rate_limited` | 429 | Quá tốc độ (`Retry-After`) |
 | `unsupported_version` | 426 | App hoặc giao thức quá cũ |
 | `insecure_sdp` | 400 | SDP thiếu DTLS |
-| `access_revoked`, `preempted` | (MQTT) | Lý do đóng phiên |
+| `access_revoked`, `preempted`, `timeout_waking`, `timeout_answer`, `timeout_ice` | (MQTT) | Lý do đóng phiên (`CloseReason`) |
 | `internal` | 500 | Lỗi server |
 
 ---

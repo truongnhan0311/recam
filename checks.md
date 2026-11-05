@@ -19,6 +19,10 @@ Phiên bản đang kiểm: S1 v0.3 (bám sát Tuya, MQTT, giao thức log, kiế
 | S1 | Nội dung giao thức đúng và đủ về mặt thiết kế | unresolved | Chưa có người xem xét; chưa có cài đặt nào kiểm chứng. Xem `PROTOCOL.md` mục 15 |
 | S1 | Mô hình quyền và giới hạn gói khớp với quyết định của người phụ trách (mục 11 của plan) | unresolved | Các giả định mục 11 chưa được xác nhận |
 
+| S1 v0.3.1 | Sửa 6 lỗ hổng khi đọc lại: (1) talkback cần đàm phán lại SDP, (2) viewer không biết camera đã thức sau `202 waking`, (3) dò token ghép đôi, (4) shard mâu thuẫn băm/CSDL, (5) hiện diện ghi hai nguồn, (6) `camera_offline` dùng cho timeout answer | pass (về tài liệu) | Đã sửa `PROTOCOL.md`, `openapi.yaml` (thêm `MqSessionState`, `timeout_answer`), `ARCHITECTURE.md`, `plan.md`. Kiểm bằng script Python tương đương (`yaml` parse, mọi `$ref` trỏ đúng, 30 thao tác có lỗi 4xx/5xx, 10 `Mq*` kế thừa `MqEnvelope`, `x-mqtt` đủ schema, 10 giai đoạn); thử phá (đổi tên `MqSessionState`) thì script báo lỗi đúng |
+| S1 v0.3.1 | `make proto-check` (Go) chạy lại trên bản mới | unresolved | Phiên cloud chặn lệnh vì phải tải toolchain Go 1.26 và module. **Cần chạy lại trên máy có Go** |
+| S1 v0.3.1 | Sơ đồ trình tự mục 7 `PROTOCOL.md` (thêm 3 dòng `session.state`) render được | unresolved | Chưa chạy mermaid-cli lại; cú pháp chỉ dùng mũi tên và chữ thường, không có `;` |
+
 Lỗi đã gặp và sửa trong lúc làm S1 (để khỏi lặp lại):
 1. Trường tên `on` bị YAML 1.1 hiểu thành `true` → đổi thành `enabled`.
 2. Dấu `;` trong ghi chú sơ đồ mermaid là dấu ngắt lệnh → đổi thành dấu phẩy.
@@ -27,3 +31,4 @@ Lỗi đã gặp và sửa trong lúc làm S1 (để khỏi lặp lại):
 5. Checker Go ban đầu bỏ sót lỗi bên trong từ khóa JSON Schema (`type: intgr`, `required: [true]`) mà bản Python bắt được → bổ sung kiểm tra, và thử phá lại.
 6. Sơ đồ 01 và 04 ban đầu rối (đường chéo, nhãn đè) → vẽ lại, xem lại ảnh.
 7. `go get` kéo toolchain Go 1.26 (do `libopenapi` yêu cầu) và ghi `go 1.26.0` vào `go.mod`; máy hiện có Go 1.24.7 và tự tải toolchain.
+8. Thiết kế bỏ sót luồng khi đọc lại: talkback mâu thuẫn với quy tắc "offer mới hủy phiên"; trạng thái `waking` không có thông điệp báo viewer; giới hạn chỉ theo token không chống được dò nhiều token; hai nguồn sự thật cho shard và hiện diện; mã lỗi sai nghĩa. Đã sửa ở v0.3.1.

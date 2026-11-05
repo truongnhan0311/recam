@@ -54,7 +54,7 @@ Ngày: 2026-11-05. Ngôn ngữ: tiếng Việt. Các con số sizing là **ướ
 │ (WebRTC peer)    │ ◄─── push (FCM/APNs)─│  - đăng nhập, ghép đôi QR  │
 └────────┬─────────┘                      │  - trao đổi SDP/ICE        │
          │                                │  - cấp TURN credential     │
-         │  media: P2P qua ICE            │  - presence (Valkey)       │
+         │  media: P2P qua ICE            │  - presence (MQTT→Valkey)  │
          │  (thất bại → qua TURN)         └──────┬──────────┬──────────┘
          ▼                                       │          │
 ┌──────────────────┐                      ┌──────▼───┐  ┌───▼──────────┐
@@ -139,7 +139,7 @@ Mô tả điều một camera làm từ lúc có nguồn đến lúc phục vụ
 | # | Giai đoạn | Việc xảy ra | Giao thức |
 |---|---|---|---|
 | 1 | **Danh tính** | Sinh `uuid` và `authkey`, cất trong kho khóa của hệ điều hành | |
-| 2 | **Ghép đôi** | Chủ tạo token ≤ 8 ký tự, sống 10 phút, một lần; camera quét QR hoặc nhập | HTTPS |
+| 2 | **Ghép đôi** | Chủ tạo token đúng 8 ký tự, sống 10 phút, một lần; camera quét QR hoặc nhập; kích hoạt giới hạn sai theo token, IP và `uuid` | HTTPS |
 | 3 | **Tìm địa chỉ** | Hỏi `url_config` theo vùng để biết địa chỉ API và MQTT | HTTPS |
 | 4 | **Kích hoạt** | Gửi token + `uuid` + `authkey`, nhận `devid`, `seckey`, `localkey` | HTTPS |
 | 5 | **Cập nhật khi khởi động** | Báo phiên bản, khả năng, DP ban đầu; nhận cấu hình động và đồng bộ giờ | HTTPS có ký |
@@ -277,7 +277,7 @@ Trình tự khi app muốn xem (đọc từ tên hàm, kiểu dữ liệu và ch
 | Server API (`cam-api`) | Go, `net/http` | REST; cụm không giữ trạng thái | |
 | Server MQTT (`cam-mq`) | Go, thư viện `mochi-mqtt/server` | Kênh điều khiển như Tuya: hiện diện bằng Last Will, QoS 1, ACL theo chủ đề; xác thực bằng hook Go. Dự phòng MQTT qua WSS 443. **Chưa xác minh** về cụm và bảo trì (bản mới nhất trên proxy ghi 2025-03-01) | EMQX (Erlang), Mosquitto (C), vì lệch Go-only |
 | DB | PostgreSQL | Tài khoản, camera, quyền | MySQL |
-| Presence/pubsub | Valkey (hoặc Redis) | Presence và pubsub nhanh | |
+| Presence/pubsub | Valkey (hoặc Redis) | Bản sao presence để đọc nhanh (nguồn gốc là retained MQTT `cam/presence`), phiên đang chạy, giới hạn tốc độ | |
 | Server Stream (`cam-stream`) | Go, thư viện `pion/turn` | TURN theo vùng, các node độc lập, dùng chung bí mật HMAC với `cam-api`. **Chưa đo tải** so với coturn | coturn (C), vì lệch Go-only |
 | Auth | JWT (access ngắn + refresh), đăng nhập email/Apple/Google | Chuẩn, App Store yêu cầu Sign in with Apple nếu có đăng nhập bên thứ ba | |
 | Push | FCM (Android) + APNs (iOS) | Miễn phí | |

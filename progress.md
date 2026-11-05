@@ -24,7 +24,11 @@
 - Trường `on` bị cấm (bẫy YAML 1.1); dùng `enabled`.
 - Mã lỗi `plan_limit_reached` trả HTTP 402.
 
+- **v0.3.1 (đọc lại thiết kế):** v1 không đàm phán lại SDP, talkback dùng audio `sendrecv` + `replaceTrack`; thêm `MqSessionState` báo viewer camera đã thức; giới hạn kích hoạt theo IP (10 sai/giờ) và `uuid` (5 sai/10 phút); CSDL `mq_node` là nguồn quyết định shard, băm chỉ dùng khi gán; retained MQTT là nguồn hiện diện, Valkey là bản sao; thêm `timeout_answer`.
+
 ## Open issues
+- `make proto-check` chưa chạy lại trên bản v0.3.1 (phiên cloud chặn tải Go 1.26); đã kiểm bằng script Python tương đương.
+- Cân bằng lại tải shard chủ động chưa thiết kế (S3).
 - Chưa ai xem xét thiết kế; mọi con số (nhịp tim, thời hạn, bậc chất lượng, công thức `max_viewers`) là đề xuất.
 - Chưa có endpoint bật/tắt "cho phép hỗ trợ xem log".
 - libwebrtc có thể mã hóa riêng cho mỗi PeerConnection → `max_viewers` có thể thấp hơn kỳ vọng.

@@ -47,7 +47,7 @@ x-mqtt:
     - name: "cam/user/{uid}"
       direction: server→app (chủ hoặc người được chia sẻ)
       subscribe: [user]
-      messages: [MqAnswer, MqCandidate, MqDisconnect, MqDpReport, MqLogRequest, MqError]
+      messages: [MqAnswer, MqCandidate, MqDisconnect, MqDpReport, MqLogRequest, MqSessionState, MqError]
     - name: "cam/presence/{devid}"
       direction: camera→server (retained, có LWT)
       publish: [device]
@@ -224,6 +224,8 @@ paths:
         server trả `devid`, `seckey`, `localkey`. Thiết bị lưu cả ba vào kho khóa của hệ điều hành.
         `t` (ms) phải lệch giờ server không quá 5 phút. Kích hoạt lại cùng `uuid` thì cấp lại `devid` cũ.
         Gói Free chỉ cho 1 camera; vượt thì `402 plan_limit_reached`.
+        Chống dò token: ngoài khóa token sau 5 lần sai, server giới hạn 10 lần sai/giờ cho mỗi IP và
+        5 lần sai/10 phút cho mỗi `uuid`; vượt thì `429 rate_limited`.
       security: []
       requestBody:
         required: true
@@ -516,6 +518,8 @@ paths:
 
         - Camera online: `201`, state `negotiating`. Viewer gửi `offer` qua `POST /sessions/{id}/signal`.
         - Camera ở nền, có push token: `202`, state `waking`, server gửi push và chờ tối đa 15 giây.
+          Khi camera online, server gửi `MqSessionState` (`negotiating`) qua `cam/user/{uid}`; viewer chỉ gửi `offer`
+          sau đó. Dự phòng: hỏi `GET /sessions/{id}` mỗi 2 giây.
         - Camera offline: `409 camera_offline`. Đầy: `409 camera_busy`.
       requestBody:
         required: true
@@ -1099,6 +1103,7 @@ components:
         - overheated
         - low_battery
         - timeout_waking
+        - timeout_answer
         - timeout_ice
         - insecure_sdp
         - token_expired
@@ -1242,7 +1247,9 @@ components:
     MqOffer:
       description: |
         Viewer → camera (qua REST rồi MQTT). **Viewer là bên tạo offer** (giống app của Tuya). Mang kèm thông tin ICE.
-        SDP phải có `a=fingerprint:sha-256`; viewer ở `recvonly` cho video/audio, có phần `application` cho DataChannel.
+        SDP phải có `a=fingerprint:sha-256`; video `recvonly`, audio `sendrecv` nếu camera có `speaker` (chưa gắn track
+        micro tới `speaker.start`), ngược lại `recvonly`; có phần `application` cho DataChannel. v1 không đàm phán lại
+        SDP trong một phiên; `offer` thứ hai cùng `sessionid` bị từ chối `conflict`.
       allOf:
         - $ref: "#/components/schemas/MqEnvelope"
         - type: object
@@ -1304,7 +1311,7 @@ components:
                 sdp_mline_index: { type: [integer, "null"] }
 
     MqDisconnect:
-      description: Hai chiều. Kết thúc phiên. Một `offer` mới cho cùng cặp cũng hủy phiên cũ.
+      description: Hai chiều. Kết thúc phiên. Một `offer` với `sessionid` mới cho cùng cặp cũng hủy phiên cũ.
       allOf:
         - $ref: "#/components/schemas/MqEnvelope"
         - type: object
@@ -1318,6 +1325,27 @@ components:
               required: [reason]
               properties:
                 reason: { $ref: "#/components/schemas/CloseReason" }
+
+    MqSessionState:
+      description: |
+        Server → viewer qua `cam/user/{uid}`. Báo trạng thái phiên do server đổi: camera đã thức sau `202 waking`
+        (`negotiating`, kèm `ice` nếu được cấp lại), hoặc phiên bị đóng phía server (`closed`, kèm `close_reason`).
+      allOf:
+        - $ref: "#/components/schemas/MqEnvelope"
+        - type: object
+          properties:
+            header:
+              type: object
+              properties:
+                type: { const: session.state }
+            msg:
+              type: object
+              required: [sessionid, state]
+              properties:
+                sessionid: { type: string, format: uuid }
+                state: { type: string, enum: [negotiating, closed] }
+                close_reason: { $ref: "#/components/schemas/CloseReason" }
+                ice: { $ref: "#/components/schemas/IceTokens" }
 
     MqError:
       description: Hai chiều. Báo lỗi cho một thông điệp trước (cùng `sessionid` hoặc `id`).
@@ -1406,7 +1434,8 @@ components:
       description: |
         Viewer → camera. Bắt đầu/dừng từng luồng. Tương ứng `OnLiveVideoStart/Stop`, `OnLiveAudioStart/Stop`,
         và (loa, từ app xuống thiết bị) `OnLiveAudioStart/Stop` của chế độ nói chuyện. **Camera chỉ mã hóa sau
-        `video.start`** để tiết kiệm CPU.
+        `video.start`** để tiết kiệm CPU. `speaker.start` không đàm phán lại SDP: viewer gắn track micro vào
+        transceiver audio `sendrecv` đã có bằng `replaceTrack`; camera không có `speaker` trả `unsupported`.
       allOf:
         - $ref: "#/components/schemas/CtrlMessage"
         - type: object

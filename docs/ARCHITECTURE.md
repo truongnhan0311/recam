@@ -93,7 +93,7 @@ flowchart TB
 | **Server MQTT** | Kết nối đang mở, hàng đợi QoS 1 ngắn hạn, thông điệp retained của hiện diện | Tài khoản, quyền (hỏi Server API khi kiểm đăng nhập) |
 | **Server Stream** | Allocation TURN đang chạy (trong bộ nhớ) | Mọi thứ khác; không biết ai là ai ngoài `sessionid` trong tên đăng nhập TURN |
 | **PostgreSQL** | Dữ liệu bền: tài khoản, camera, chia sẻ, gói | |
-| **Valkey** | Phiên đang chạy, hiện diện nhanh, giới hạn tốc độ | |
+| **Valkey** | Phiên đang chạy, **bản sao** hiện diện (nguồn gốc là `cam/presence` retained, mục 3.2), giới hạn tốc độ | |
 
 ---
 
@@ -147,13 +147,15 @@ flowchart TB
 
 ### 3.1 Server API: cụm không giữ trạng thái
 - Nhiều bản `cam-api` sau cân bằng tải. Mọi trạng thái bền nằm trong PostgreSQL, trạng thái nóng trong Valkey. Bản nào cũng xử lý được mọi yêu cầu.
-- Mỗi bản `cam-api` là **client MQTT** của mọi shard (để ghi vào chủ đề của camera bất kỳ).
+- Mỗi bản `cam-api` là **client MQTT** của mọi shard (để ghi vào chủ đề của camera bất kỳ), đăng ký `cam/device/out/+` và `cam/presence/+`.
+- **Hiện diện:** nguồn gốc duy nhất là thông điệp retained `cam/presence/{devid}` (có Last Will). `cam-api` chép mỗi thay đổi vào Valkey (`presence:{devid}`, TTL = 3 × `heartbeat_s`) để `POST /sessions` đọc nhanh. Valkey mất dữ liệu thì dựng lại từ thông điệp retained khi đăng ký lại; Valkey và MQTT khác nhau thì tin MQTT.
 
 ### 3.2 Server MQTT: chia shard theo `devid`
 Vấn đề của cụm: camera chỉ nối vào **một** node broker. Muốn gửi `offer` tới camera, Server API phải ghi **đúng node đang giữ kết nối đó**.
 
 Cách giải (không cần broker có cụm sẵn):
-- Mỗi thiết bị có một **shard cố định** `shard = consistent_hash(devid)` trên danh sách node broker đang sống; lưu trong CSDL (`device.mq_node`).
+- **Nguồn quyết định là CSDL** (`device.mq_node`). Băm nhất quán `consistent_hash(devid)` trên danh sách node đang sống **chỉ dùng khi gán**: lần đầu thiết bị lấy `mqtt_url`, hoặc khi node đã ghi trong CSDL không còn sống. Kết quả gán được ghi lại vào CSDL.
+- Node cũ sống lại **không** kéo thiết bị về (tránh dồn kết nối lại hàng loạt). Cân bằng lại tải chỉ làm chủ động, từng đợt nhỏ (đổi `mq_node` rồi báo thiết bị nối lại); cách báo chưa thiết kế, để S3.
 - Địa chỉ broker **không** cố định trong app. Nó đến từ API: camera nhận `mqtt_url` trong `PUT /devices/{devid}/info` (giống `mqttsSelfUrl` của Tuya); app xem nhận `url` trong `POST /mqtt/access-config` (shard của `uid`).
 - Mất một node: thiết bị nối lại thất bại → hỏi API lấy `mqtt_url` mới (shard được gán lại) → nối vào node khác. Broker mới có hàng đợi trống, nên thông điệp đang bay có thể mất; phiên đang bay hết hạn theo thời hạn pha (PROTOCOL.md 7.2).
 - Nếu sau này chọn broker có cụm sẵn thì **bỏ phần shard**, mọi node nhận mọi chủ đề.
@@ -343,6 +345,6 @@ flowchart TB
 | 1 | `mochi-mqtt` chưa xác minh về cụm, bảo trì (bản mới nhất 2025-03-01), tải thực tế | Thử ở S3; phương án dự phòng: viết broker tối giản bằng Go hoặc chấp nhận một broker ngoài Go (cần bạn quyết định vì lệch chỉ đạo Go-only) |
 | 2 | `pion/turn` chưa đo tải so với coturn | Đo ở S7; coturn là phương án dự phòng (viết bằng C, cũng lệch Go-only) |
 | 3 | `cam-api` đăng ký `out/+` trên **mọi** shard: số kết nối API × shard tăng nhanh | Đo ở S3; có thể dùng đăng ký chia sẻ của MQTT 5 nếu broker hỗ trợ (chưa xác minh) |
-| 4 | Shard bị lệch tải hoặc mất node: cách gán lại | Băm nhất quán + lưu `mq_node` trong CSDL; chốt ở S3 |
-| 5 | Hiện diện: lấy từ `presence` retained, hay đồng bộ vào Valkey | Chốt ở S3 |
+| 4 | Shard bị lệch tải hoặc mất node: cách gán lại | **Đã chốt (mục 3.2):** CSDL `mq_node` là nguồn quyết định, băm nhất quán chỉ dùng khi gán; node sống lại không kéo thiết bị về. Còn mở: cách cân bằng lại tải chủ động (S3) |
+| 5 | Hiện diện: lấy từ `presence` retained, hay đồng bộ vào Valkey | **Đã chốt (mục 3.1):** retained MQTT là nguồn gốc, Valkey là bản sao để đọc nhanh |
 | 6 | Cần vẽ thêm sơ đồ cho luồng chia sẻ, thanh toán, log theo yêu cầu | Log đã có ở `PROTOCOL.md` mục 10; chia sẻ và thanh toán vẽ ở S11, S14 |
