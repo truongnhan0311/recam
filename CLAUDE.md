@@ -16,3 +16,5 @@ Dự án Recam: hiện chỉ có tài liệu thiết kế (S1). Đọc `README.m
 - Mã lỗi/lý do đóng phải đúng nghĩa; timeout dùng mã `timeout_*` riêng.
 - Thêm thông điệp `Mq*` mới thì thêm vào `x-mqtt` và cho kế thừa `MqEnvelope`.
 - Ghi tên thư viện hay thuật toán vào tài liệu thì kiểm trước: phiên bản trên `proxy.golang.org`, và đọc mã của framework xem có hỗ trợ không (ví dụ Goravel chỉ ký JWT HS256).
+- App là KMP trên `kmp_bootstrap` (đọc `AGENTS.md` của repo đó trước khi sửa kit; commit kit bằng tiếng Việt, đứng tên chủ dự án, không thêm trailer). Phần riêng của Recam để trong app, không đưa vào kit.
+- Test client có keepAlive bằng `runTest`: thời gian ảo tự tua nên PINGREQ sẽ chen vào; đặt `keepAliveSeconds = 0` nếu test không nói về ping. Nghe `messages` (SharedFlow) TRƯỚC khi nối, nếu không tin đến sớm bị mất.

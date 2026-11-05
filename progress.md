@@ -30,7 +30,10 @@
 
 - **Codec và app (2026-11-05):** offer khai H.264 rồi VP8; camera dùng VP8 khi không có H.264 phần cứng (Android `flutter_webrtc` không có H.264 phần mềm). App dùng `flutter_webrtc` 1.6.3 và `mqtt_client` 10.14.0 (MQTT 3.1.1); bot test bằng `pion/webrtc/v4`. Xem `plan.md` 3.1, 3.2.
 
+- **App chuyển sang KMP (2026-11-05):** dùng `kmp_bootstrap`; đã thêm `appkit-mqtt` và `appkit-webrtc` vào kit (nhánh `claude/keen-pascal-ae6xfi` của repo đó). App dùng MQTT qua `wss` 443; broker vẫn mở 8883. Xem `plan.md` 3.2, R14.
+
 ## Open issues
+- `appkit-webrtc`: Android chưa biên dịch, iOS chưa có (R14). App mẫu sinh bằng `new-app.mjs` chưa biên dịch được ở đây (Maven Central trả 429 khi tải Compose).
 - Chưa xác nhận trên máy thật việc Android thiếu H.264 phần mềm, và CPU của VP8 phần mềm (S7).
 - `make proto-check` chưa chạy lại trên bản v0.3.1 (phiên cloud chặn tải Go 1.26); đã kiểm bằng script Python tương đương.
 - Cân bằng lại tải shard: đã thiết kế (`ARCHITECTURE.md` 3.2.1, `MqMigrate`); chưa đo thời gian chuyển một đợt và chi phí `cam-api` đăng ký `cam/presence/+` trên mọi shard (S3).

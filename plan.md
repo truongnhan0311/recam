@@ -270,7 +270,7 @@ Trình tự khi app muốn xem (đọc từ tên hàm, kiểu dữ liệu và ch
 
 | Lớp | Lựa chọn | Lý do | Phương án khác |
 |---|---|---|---|
-| App | **Flutter** + `flutter_webrtc` | Một codebase iOS+Android; WebRTC trưởng thành | Native Kotlin/Swift (kiểm soát nền tốt hơn nhưng gấp đôi công) |
+| App | **Kotlin Multiplatform** trên SDK nội bộ `kmp_bootstrap` (chỉ đạo 2026-11-05) | Camera mode chủ yếu là việc native (Foreground Service, MediaCodec, Keystore); KMP gọi thẳng API Android, phần chung (giao thức, máy trạng thái, MQTT, SDP) viết một lần | Flutter + `flutter_webrtc` (phương án cũ) |
 | Camera nền Android | Foreground Service + WakeLock | Cách chuẩn để chạy lâu | |
 | Camera nền iOS | Giữ app foreground, màn hình mờ, cắm sạc | iOS không cho chạy camera nền lâu dài | Giới hạn sản phẩm, xem rủi ro R1 |
 | **Ngôn ngữ server** | **Chỉ Go** (chỉ đạo) | Một ngôn ngữ cho server, hạ tầng và công cụ kiểm tra | |
@@ -281,7 +281,7 @@ Trình tự khi app muốn xem (đọc từ tên hàm, kiểu dữ liệu và ch
 | Server Stream (`cam-stream`) | Go, thư viện `pion/turn` | TURN theo vùng, các node độc lập, dùng chung bí mật HMAC với `cam-api`. **Chưa đo tải** so với coturn | coturn (C), vì lệch Go-only |
 | Auth | JWT **HS256** qua guard của Goravel (access ngắn) + refresh token ngẫu nhiên tự viết, đăng nhập email/Apple/Google | Chuẩn, App Store yêu cầu Sign in with Apple nếu có đăng nhập bên thứ ba | |
 | Push | FCM, gửi cả Android và iOS (FCM chuyển tiếp qua APNs) | Miễn phí, một thư viện | APNs trực tiếp |
-| Quảng cáo | Google AdMob + UMP (đồng ý) + ATT (iOS) | Phổ biến, có SDK Flutter | |
+| Quảng cáo | Google AdMob + UMP (đồng ý) + ATT (iOS) | Phổ biến; gọi SDK native mỗi nền tảng qua `expect/actual` | |
 | Thanh toán | Apple IAP + Google Play Billing, qua RevenueCat hoặc tự kiểm biên lai | Store bắt buộc với thuê bao số | |
 | Giám sát | Prometheus + Grafana + Loki | Bộ giám sát phổ biến, mã nguồn mở | |
 
@@ -311,15 +311,19 @@ Băm mật khẩu dùng Hash của Goravel (argon2id); HMAC, SHA-256 dùng thư 
 
 Test tự động (S7, CI): bot camera và viewer giả bằng `github.com/pion/webrtc/v4` v4.2.26, chỉ dùng trong test, không chạy trong sản phẩm.
 
-### 3.2 Package Flutter phía app (MQTT và WebRTC)
+### 3.2 App: Kotlin Multiplatform trên `kmp_bootstrap`
 
-Bản mới nhất theo pub.dev ngày 2026-11-05; tính năng đã kiểm trong mã nguồn của package.
+App dùng SDK nội bộ [`truongnhan0311/kmp_bootstrap`](https://github.com/truongnhan0311/kmp_bootstrap) (nhánh `claude/keen-pascal-ae6xfi`, chưa merge vào `main`). Tạo dự án: `node tools/new-app.mjs --name recam --id <id> --out ../recam-app --modules network,push,platform,ui,mqtt,webrtc`.
 
-| Việc | Package | Bản | Đã kiểm |
-|---|---|---|---|
-| WebRTC | `flutter_webrtc` | 1.6.3 | Có `replaceTrack` (talkback), DataChannel; dùng libwebrtc `webrtc-sdk` 150.7871.04 cho Android và iOS. Android không có H.264 phần mềm (xem R13) |
-| MQTT (chọn) | `mqtt_client` (MQTT 3.1.1) | 10.14.0 | Last Will (`withWillTopic`, `withWillRetain`), QoS 1, WebSocket cho dự phòng cổng 443. Giao thức không cần tính năng riêng của MQTT 5; broker `mochi-mqtt` nhận cả 3.1.1 và 5 |
-| MQTT (phương án khác) | `mqtt5_client` | 5.2.0 | Cùng tác giả, có WebSocket; dùng nếu sau này cần MQTT 5 ở app |
+| Việc | Module của kit | Ghi chú |
+|---|---|---|
+| REST, JWT, làm mới phiên | `appkit-network` | Refresh token dùng một lần, khớp `PROTOCOL.md` 3.1 |
+| Push đánh thức (FCM) | `appkit-push` | |
+| Khóa thiết bị (`authkey`, `seckey`, `localkey`) | `appkit-core` (`AppStorage`, két an toàn Keystore/Keychain) | |
+| MQTT | `appkit-mqtt` (mới) | MQTT 3.1.1 qua WebSocket: Last Will, QoS 1, nối lại `[0, min(60, 2^n)]` giây, hỏi lại mật khẩu và `mqtt_url` mỗi lần nối. Đã test trên JVM, cả WebSocket thật ở localhost |
+| WebRTC | `appkit-webrtc` (mới) | `SdpTools` (H.264 rồi VP8, kiểm `a=fingerprint`), `CandidateQueue`, `replaceTrack` cho talkback. Android: `AndroidRtcEngine` trên libwebrtc `io.github.webrtc-sdk:android` 150.7871.04, **chưa biên dịch, chưa chạy trên máy**. **iOS chưa có bản cài** (rủi ro R14) |
+
+Phần riêng của Recam (chủ đề `cam/...`, khung `header`/`msg`, `migrate`, `session.state`, lệnh `ctrl`, `max_viewers`, bậc chất lượng) viết trong app, không đưa vào kit.
 
 ---
 
@@ -382,7 +386,7 @@ Quy ước: **[P]** = có thể chạy song song với các bước cùng nhóm.
 | S1 | Spec giao thức: định dạng signaling (REST + MQTT, bám sát Tuya), **vòng đời thiết bị và danh sách `capabilities`** (mục 2.2), schema DataChannel JSON có phiên bản, mô hình quyền | `plan.md` mục 2, 2.1, 2.2 | `docs/PROTOCOL.md`, `docs/openapi.yaml` | C1 | |
 | S2 | Hạ tầng PoC **chỉ Go**: tài liệu dựng 1 VM chạy ba tiến trình `cam-api`, `cam-mq`, `cam-stream` (đơn vị systemd, chứng chỉ bằng `autocert`), **chưa tự tạo VM** | `plan.md` mục 4, `ARCHITECTURE.md` | `infra/poc/README.md`, các tệp đơn vị systemd mẫu, `cmd/cam-stream` tối giản | C2 | [P] với S3 |
 | S3 | Backend signaling tối thiểu (Go): đăng ký/đăng nhập, kích hoạt thiết bị, Server MQTT nhúng (`cam-mq`), chia shard theo `devid`, cấp thông tin ICE/TURN, nhận log theo yêu cầu | `PROTOCOL.md`, `openapi.yaml` | `server/**` + test | C3 | [P] với S2 |
-| S4 | App Flutter PoC: Camera mode + Viewer mode, 1-1 | `PROTOCOL.md` | `app/**` | C4 | |
+| S4 | App KMP PoC (`kmp_bootstrap`): Camera mode + Viewer mode, 1-1 | `PROTOCOL.md` | `app/**` | C4 | |
 | S5 | Chế độ nền Android (foreground service, wakelock) + thử iOS foreground | `app/**` | `app/android/**`, `docs/BACKGROUND.md` | C5 | |
 | S6 | Push đánh thức (FCM/APNs) và presence | `server/**` | `server/push/**`, cập nhật app | C6 | |
 | S7 | **Đo đạc**: tỉ lệ P2P/TURN theo mạng, độ trễ, CPU/pin camera, tải Server Stream | `app/**`, `infra/**` | `docs/MEASUREMENTS.md` (số thật, không phải ước lượng) | C7 | |
@@ -404,8 +408,8 @@ Hai phiên làm việc song song không được cùng sửa một file (S2 và 
 
 - Việc nào cần áp dụng **mọi lần** thì làm thành hook/script, không để nhớ bằng prompt:
   - `Makefile`: `make test`, `make lint`, `make proto-check` (kiểm tra OpenAPI hợp lệ).
-  - Pre-commit: `gofmt`, `go vet`, `flutter analyze`.
-- Công cụ cần có: **Go (toolchain 1.26)**, Flutter ≥ 3.24. Mọi công cụ phía server và kiểm tra viết bằng Go, không dùng Python hay Node. (Kiểm tra render sơ đồ mermaid vẫn chạy thủ công bằng Node, chỉ để xem tài liệu, không thuộc server.) Nếu môi trường hiện tại thiếu công cụ nào thì ghi blocker vào `progress.md`, không bỏ qua check.
+  - Pre-commit: `gofmt`, `go vet`; app: `./gradlew -PdesktopOnly=true desktopTest` (test phần chung trên JVM).
+- Công cụ cần có: **Go (toolchain 1.26)**; app: JDK 17+, Android Studio, Xcode (Mac) cho bản Android/iOS. Mọi công cụ phía server và kiểm tra viết bằng Go, không dùng Python hay Node. (Kiểm tra render sơ đồ mermaid vẫn chạy thủ công bằng Node, chỉ để xem tài liệu, không thuộc server.) Nếu môi trường hiện tại thiếu công cụ nào thì ghi blocker vào `progress.md`, không bỏ qua check.
 - Hai thiết bị thật (1 Android, 1 iPhone) là điều kiện cho S5 và S7. Emulator không đo được độ trễ, nhiệt, pin. Nếu không có thiết bị thật, S5/S7 để trạng thái `unresolved`, không giả lập kết quả.
 
 ---
@@ -430,7 +434,8 @@ Hai phiên làm việc song song không được cùng sửa một file (S2 và 
 | R4 | Nhiệt/pin điện thoại làm camera | Trung bình | Giới hạn 480p/15fps chế độ tiết kiệm; cảnh báo nhiệt |
 | R5 | Quyền riêng tư, pháp lý (COPPA/GDPR, chính sách store) | Cao | Rà soát pháp lý trước beta công khai |
 | R6 | Điện thoại camera gánh nhiều viewer thì nóng, tụt pin, hết upload; gói Plan 10 người có thể không bao giờ đạt được trên máy yếu | **Cao** | `max_viewers` theo khả năng máy (mục 2.1), hạ bitrate thích ứng, thông báo rõ cho người dùng; nếu S7 cho thấy máy phổ thông chỉ chịu 2–3 viewer thì cân nhắc SFU (mục 10) hoặc đổi cách quảng bá gói Plan |
-| R13 | Số bộ mã hóa phần cứng đồng thời trên điện thoại bị giới hạn (thường vài luồng). Trên Android, libwebrtc của `flutter_webrtc` **không có H.264 phần mềm**, nên hết H.264 phần cứng thì chỉ còn VP8 phần mềm, rất tốn CPU | Trung bình | Offer khai H.264 và VP8 (`PROTOCOL.md` 7.3); camera dùng VP8 thì `hw_encoder_limit` = 1; S7 đo codec thực tế theo mẫu máy |
+| R13 | Số bộ mã hóa phần cứng đồng thời trên điện thoại bị giới hạn (thường vài luồng). Trên Android, libwebrtc (`io.github.webrtc-sdk:android`) **không có H.264 phần mềm**, nên hết H.264 phần cứng thì chỉ còn VP8 phần mềm, rất tốn CPU | Trung bình | Offer khai H.264 và VP8 (`PROTOCOL.md` 7.3); camera dùng VP8 thì `hw_encoder_limit` = 1; S7 đo codec thực tế theo mẫu máy |
+| R14 | `appkit-webrtc` chưa có bản cài iOS; `AndroidRtcEngine` chưa biên dịch và chưa chạy trên máy (môi trường dựng kit không có Android SDK). Thư viện KMP dùng chung cho WebRTC (`webrtc-kmp` 0.125.11) đã cũ | **Cao** | S4 làm Android trước; iOS cài `RtcEngine` bằng Swift với pod `WebRTC-SDK` hoặc cinterop. Biên dịch `appkit-webrtc` bản Android trên máy có Android SDK trước khi viết app |
 | R7 | Số liệu sizing sai vì chỉ là ước lượng | Trung bình | S7 thay toàn bộ bằng số đo thật |
 | R8 | Phí store 15–30% và quy định thanh toán trong app | Trung bình | Tính vào giá; không dẫn người dùng ra ngoài store để trả tiền |
 | R9 | Quảng cáo gặp quy định đồng ý (GDPR/UMP, ATT) và chính sách nội dung; app liên quan tới trẻ em dễ bị soi kỹ | Cao | Quảng cáo chỉ phía Viewer, không trong khung video; dùng UMP/ATT; rà chính sách AdMob và store trước khi phát hành; cần tư vấn pháp lý |
@@ -491,7 +496,7 @@ Các điểm dưới đây là giả định làm nền cho plan. Nếu một gi
 | 4 | Hạ tầng PoC | Một VM rẻ trên nhà cung cấp cloud bất kỳ (DigitalOcean, AWS, Hetzner…); chưa tạo gì khi chưa được duyệt chi |
 | 5 | Mã nguồn | Dự án độc lập, repo riêng |
 | 6 | Thiết bị đo | Cần ít nhất 1 Android và 1 iPhone thật; thiếu thì S5/S7 để `unresolved` |
-| 7 | Công nghệ app | Flutter |
+| 7 | Công nghệ app | Kotlin Multiplatform trên `kmp_bootstrap` (đổi từ Flutter, 2026-11-05) |
 | 8 | Số người xem cùng lúc | `min(giới hạn của gói, khả năng điện thoại camera)`. Không dùng SFU ở MVP |
 | 9 | Ưu tiên khi quá tải | Viewer vào trước được giữ; chủ camera luôn được ưu tiên; viewer bị từ chối thấy thông báo `camera_busy` |
 | 10 | Giới hạn gói Free | 1 camera, tối đa 480p. Plan: 5 camera, tối đa 720p. Chưa giới hạn thời lượng xem |

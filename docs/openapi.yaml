@@ -32,7 +32,7 @@ tags:
   - name: logs
 
 x-mqtt:
-  broker: "mqtts://<host>:8883 hoặc wss://<host>:443/mqtt"
+  broker: "wss://<host>:443/mqtt (app dùng đường này) hoặc mqtts://<host>:8883 (client khác)"
   qos: 1
   keepalive_s: 60
   topics:
@@ -979,7 +979,7 @@ components:
         heartbeat_s: { type: integer, example: 60, description: "Keepalive MQTT" }
         mqtt_url:
           type: string
-          example: "mqtts://mq-2.sg.example.invalid:8883"
+          example: "wss://mq-2.sg.example.invalid/mqtt"
           description: |
             Địa chỉ **Server MQTT dành riêng cho thiết bị này** (shard theo `devid`, xem `ARCHITECTURE.md` mục 3.2).
             Thiết bị nối vào đúng địa chỉ này. Nếu nối thất bại thì gọi lại `PUT /devices/{devid}/info` để nhận địa chỉ mới.
@@ -991,7 +991,7 @@ components:
       properties:
         url:
           type: string
-          example: "mqtts://mq-1.sg.example.invalid:8883"
+          example: "wss://mq-1.sg.example.invalid/mqtt"
           description: Server MQTT của shard chứa `uid` này (không phải shard của camera)
         client_id: { type: string }
         username: { type: string }

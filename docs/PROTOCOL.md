@@ -38,7 +38,7 @@ Hai chuẩn tham chiếu trong thiết kế này: (1) cách Tuya tổ chức vò
 
 | # | Khác biệt | Lý do | Ghi chú |
 |---|---|---|---|
-| D1 | **Bảo mật media: DTLS-SRTP chuẩn của WebRTC**, không dùng "khóa AES nằm trong SDP + HMAC-SHA1 trên KCP" | Trong mã Tuya, khóa phiên đi trong SDP qua cloud nên cloud đọc được media. DTLS-SRTP sinh khóa giữa hai đầu, server không thấy. SDP của Tuya cũng đã khai báo `UDP/TLS/RTP/SAVPF` và `a=fingerprint`, tức ý đồ vốn là WebRTC | **Đã được người phụ trách xác nhận (2026-11-05): dùng WebRTC chuẩn.** Không tự cài KCP và AES; dùng `flutter_webrtc` |
+| D1 | **Bảo mật media: DTLS-SRTP chuẩn của WebRTC**, không dùng "khóa AES nằm trong SDP + HMAC-SHA1 trên KCP" | Trong mã Tuya, khóa phiên đi trong SDP qua cloud nên cloud đọc được media. DTLS-SRTP sinh khóa giữa hai đầu, server không thấy. SDP của Tuya cũng đã khai báo `UDP/TLS/RTP/SAVPF` và `a=fingerprint`, tức ý đồ vốn là WebRTC | **Đã được người phụ trách xác nhận (2026-11-05): dùng WebRTC chuẩn.** Không tự cài KCP và AES; dùng libwebrtc qua `appkit-webrtc` của `kmp_bootstrap` |
 | D2 | Không có lớp mã hóa AES-ECB và CRC32 trên thông điệp MQTT | ECB là chế độ yếu. TLS đã bảo vệ kênh | |
 | D3 | Không dùng KCP | WebRTC có SCTP và SRTP sẵn | |
 | D4 | Nhiều viewer một camera | Yêu cầu sản phẩm (Free 1 người, Plan 10 người). Mã Tuya chỉ cho một phiên | `max_viewers` do camera báo (mục 9) |
@@ -146,7 +146,7 @@ Chủ gọi `POST /pairing-tokens` nhận `token` (**đúng 8 ký tự** từ b�
 `PUT /devices/{devid}/info` (có ký) báo `sw_ver`, múi giờ, `capabilities` và DP ban đầu; nhận `DynamicConfig` gồm `server_time`, `heartbeat_s`, **`mqtt_url` (Server MQTT dành cho thiết bị này)**, `resolution_cap`. Thiết bị tính **độ lệch đồng hồ** từ `server_time` và dùng cho mọi `t` về sau. Sự kiện: `TIMESTAMP_SYNC`. Làm lại bước này mỗi lần khởi động.
 
 ### Giai đoạn 6 — Kết nối MQTT
-Nối vào `mqtt_url` nhận ở giai đoạn 5 (cổng 8883, dự phòng `wss://…:443/mqtt`), `client_id = devid`, mật khẩu theo mục 3.2, `keepalive = heartbeat_s` (60 giây). Đăng ký `cam/device/in/{devid}`. Đặt **Last Will** lên `cam/presence/{devid}` (`{"v":1,"online":false}`, retained) rồi publish `{"v":1,"online":true}` retained. Sự kiện: `MQTT_CONNECTED`.
+Nối vào `mqtt_url` nhận ở giai đoạn 5. **App (camera và viewer) dùng MQTT qua WebSocket `wss://…:443/mqtt`** (subprotocol `mqtt`), vì `appkit-mqtt` của `kmp_bootstrap` chỉ có đường WebSocket và cổng 443 ít bị chặn; broker vẫn mở 8883 (TLS) cho client khác, `client_id = devid`, mật khẩu theo mục 3.2, `keepalive = heartbeat_s` (60 giây). Đăng ký `cam/device/in/{devid}`. Đặt **Last Will** lên `cam/presence/{devid}` (`{"v":1,"online":false}`, retained) rồi publish `{"v":1,"online":true}` retained. Sự kiện: `MQTT_CONNECTED`.
 
 ### Giai đoạn 7 — Giữ liên lạc và hiện diện
 - Keepalive MQTT 60 giây; mất kết nối thì nối lại với thời gian chờ tăng dần có ngẫu nhiên: ngẫu nhiên đều trong `[0, min(60, 2^n)]` giây, về n=0 sau khi ổn định 60 giây.
@@ -294,7 +294,7 @@ sequenceDiagram
 - Viewer là bên **offer**: video `recvonly`; audio **`sendrecv`** nếu camera khai `speaker` trong `capabilities`, ngược lại `recvonly`; có phần `m=application` cho DataChannel `ctrl` (có thứ tự, tin cậy). Với audio `sendrecv`, viewer **chưa gắn track micro** (transceiver không có track, không gửi gì) cho tới `speaker.start` (mục 8).
 - **v1 không đàm phán lại SDP trong một phiên.** Mọi thay đổi luồng (talkback, độ phân giải, bitrate) đi bằng lệnh `ctrl`.
 - Offer **PHẢI** có `a=fingerprint:sha-256`, `a=setup:actpass`. Thiếu thì server từ chối ở `POST /sessions/{id}/signal` (`400 insecure_sdp`) và camera cũng tự kiểm, **không** trả answer.
-- Video: offer **PHẢI** khai cả hai, theo thứ tự ưu tiên: **H.264 Constrained Baseline** `profile-level-id=42e01f`, `packetization-mode=1`, rồi **VP8**. Camera chọn H.264 nếu máy có bộ mã hóa H.264 phần cứng, ngược lại chọn VP8. Lý do: trên Android, libwebrtc của `flutter_webrtc` **không có bộ mã hóa H.264 phần mềm** (ghi chú trong `SimulcastVideoEncoderFactoryWrapper.kt` của `flutter_webrtc` 1.6.3), nên máy cũ không có H.264 phần cứng chỉ gửi được VP8. *Chưa thử trên máy thật, xác nhận ở S7.* Audio **Opus** 48 kHz, `useinbandfec=1`.
+- Video: offer **PHẢI** khai cả hai, theo thứ tự ưu tiên: **H.264 Constrained Baseline** `profile-level-id=42e01f`, `packetization-mode=1`, rồi **VP8**. Camera chọn H.264 nếu máy có bộ mã hóa H.264 phần cứng, ngược lại chọn VP8. Lý do: trên Android, libwebrtc (`io.github.webrtc-sdk:android` 150.7871.04, app dùng qua `appkit-webrtc`) **không có bộ mã hóa H.264 phần mềm** (ghi chú trong `SimulcastVideoEncoderFactoryWrapper.kt` của `flutter_webrtc` 1.6.3, dùng cùng bản libwebrtc). Camera biết trước bằng `RtcEngine.videoEncoders()`, nên máy cũ không có H.264 phần cứng chỉ gửi được VP8. *Chưa thử trên máy thật, xác nhận ở S7.* Audio **Opus** 48 kHz, `useinbandfec=1`.
 - ICE trickle (`a=ice-options:trickle`). Thông tin ICE lấy từ `token`, `udp_token`, `tcp_token`.
 - Một `offer` với **`sessionid` mới** cho cùng cặp viewer-camera hủy phiên cũ (giống Tuya). `offer` thứ hai trong **cùng** `sessionid` bị từ chối bằng `error` `conflict`.
 
@@ -449,7 +449,7 @@ Mỗi bên gửi `POST /sessions/{id}/report` khi kết thúc: loại kết nố
 
 | # | Vấn đề | Cách giải |
 |---|---|---|
-| 1 | libwebrtc mặc định tạo **một bộ mã hóa cho mỗi PeerConnection**; nhiều viewer thì CPU gấp nhiều lần. Chia sẻ một bộ mã hóa được không? | Đo ở S7 với `flutter_webrtc`; nếu không thì `max_viewers` thấp và cân nhắc SFU (plan mục 10) |
+| 1 | libwebrtc mặc định tạo **một bộ mã hóa cho mỗi PeerConnection**; nhiều viewer thì CPU gấp nhiều lần. Chia sẻ một bộ mã hóa được không? | Đo ở S7 với `AndroidRtcEngine` (`appkit-webrtc`); nếu không thì `max_viewers` thấp và cân nhắc SFU (plan mục 10) |
 | 2 | Khởi động Foreground Service từ FCM trên Android 12+ | Thử ở S5/S6 |
 | 3 | iOS không đánh thức camera nền | Giữ foreground + cắm sạc (rủi ro R1 trong plan) |
 | 4 | Chạy Server MQTT thành cụm: chia shard theo `devid` (`ARCHITECTURE.md` mục 3.2); `mochi-mqtt` chưa xác minh về cụm và bảo trì | Thử ở S3; nếu không đạt thì cần quyết định lại vì phương án khác lệch Go-only |

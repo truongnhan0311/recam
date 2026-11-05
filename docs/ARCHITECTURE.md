@@ -71,7 +71,7 @@ flowchart TB
 | Từ | Đến | Giao thức | Mục đích |
 |---|---|---|---|
 | App camera | Server API | HTTPS, yêu cầu có ký (`seckey`) | Kích hoạt, báo thông tin khi khởi động, báo cáo phiên, trả log |
-| App camera | Server MQTT | MQTT qua TLS (8883, dự phòng 443) | Nhận lệnh và signaling, báo DP, báo hiện diện |
+| App camera | Server MQTT | MQTT qua WebSocket TLS (`wss` 443; broker mở thêm 8883 cho client khác) | Nhận lệnh và signaling, báo DP, báo hiện diện |
 | App xem | Server API | HTTPS, JWT | Đăng nhập, danh sách camera, tạo phiên, gửi `offer`/`candidate`, chia sẻ |
 | App xem | Server MQTT | MQTT qua TLS | **Chỉ nhận**: `answer`, `candidate`, `disconnect`, DP |
 | Server API | Server MQTT | MQTT (client) | Ghi lệnh/signaling vào chủ đề của camera và của người xem; nhận thông điệp camera gửi lên và hiện diện |
@@ -330,7 +330,7 @@ flowchart TB
         direction TB
         VM["1 VM, 2 vCPU / 4 GB"]
         P1["cam-api<br/>HTTPS 443"]
-        P2["cam-mq<br/>MQTT 8883"]
+        P2["cam-mq<br/>MQTT wss 443 và 8883"]
         P3["cam-stream<br/>TURN 3478 và 443"]
         P4[("PostgreSQL")]
         VM --- P1
