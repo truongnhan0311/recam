@@ -267,7 +267,7 @@ sequenceDiagram
     V->>C: ctrl video.start và audio.start
     Note over C: bắt đầu mã hóa chỉ từ lúc này
     V->>C: ctrl iframe.request
-    C-->>V: video H.264 và audio Opus
+    C-->>V: video H.264 hoặc VP8, audio Opus
     C->>S: POST /sessions/id/report (có ký)
     V->>S: POST /sessions/id/report
     V->>S: DELETE /sessions/id
@@ -294,7 +294,7 @@ sequenceDiagram
 - Viewer là bên **offer**: video `recvonly`; audio **`sendrecv`** nếu camera khai `speaker` trong `capabilities`, ngược lại `recvonly`; có phần `m=application` cho DataChannel `ctrl` (có thứ tự, tin cậy). Với audio `sendrecv`, viewer **chưa gắn track micro** (transceiver không có track, không gửi gì) cho tới `speaker.start` (mục 8).
 - **v1 không đàm phán lại SDP trong một phiên.** Mọi thay đổi luồng (talkback, độ phân giải, bitrate) đi bằng lệnh `ctrl`.
 - Offer **PHẢI** có `a=fingerprint:sha-256`, `a=setup:actpass`. Thiếu thì server từ chối ở `POST /sessions/{id}/signal` (`400 insecure_sdp`) và camera cũng tự kiểm, **không** trả answer.
-- Video **H.264 Constrained Baseline** `profile-level-id=42e01f`, `packetization-mode=1`. Audio **Opus** 48 kHz, `useinbandfec=1`.
+- Video: offer **PHẢI** khai cả hai, theo thứ tự ưu tiên: **H.264 Constrained Baseline** `profile-level-id=42e01f`, `packetization-mode=1`, rồi **VP8**. Camera chọn H.264 nếu máy có bộ mã hóa H.264 phần cứng, ngược lại chọn VP8. Lý do: trên Android, libwebrtc của `flutter_webrtc` **không có bộ mã hóa H.264 phần mềm** (ghi chú trong `SimulcastVideoEncoderFactoryWrapper.kt` của `flutter_webrtc` 1.6.3), nên máy cũ không có H.264 phần cứng chỉ gửi được VP8. *Chưa thử trên máy thật, xác nhận ở S7.* Audio **Opus** 48 kHz, `useinbandfec=1`.
 - ICE trickle (`a=ice-options:trickle`). Thông tin ICE lấy từ `token`, `udp_token`, `tcp_token`.
 - Một `offer` với **`sessionid` mới** cho cùng cặp viewer-camera hủy phiên cũ (giống Tuya). `offer` thứ hai trong **cùng** `sessionid` bị từ chối bằng `error` `conflict`.
 
@@ -343,7 +343,7 @@ Nhãn `ctrl`, có thứ tự, tin cậy, JSON UTF-8 tối đa 16 KiB. Khung: `{"
 | `108` | `motion_detect` | bool | rw | Bật phát hiện chuyển động (dành sau) |
 | `109` | `motion_alarm` | event | ro | Sự kiện chuyển động (dành sau) |
 
-Khả năng (`capabilities`) khai ở `PUT …/info`: `video.h264`, `audio.opus`, `speaker`, `torch`, `ptz`.
+Khả năng (`capabilities`) khai ở `PUT …/info`: `video.h264` (chỉ khi có bộ mã hóa H.264 phần cứng), `video.vp8`, `audio.opus`, `speaker`, `torch`, `ptz`.
 
 ### 9.2 Sức chứa
 **Camera tự báo `max_viewers`** (vì chỉ camera biết máy chịu được bao nhiêu); server cưỡng chế. Công thức ban đầu (chỉnh ở S7):
@@ -351,7 +351,7 @@ Khả năng (`capabilities`) khai ở `PUT …/info`: `video.h264`, `audio.opus`
 max_viewers = clamp( floor(0.7 × upload_kbps / bitrate_kbps(bậc hiện tại)),
                      1, hw_encoder_limit )
 ```
-`upload_kbps` đo khi bật Camera mode và lặp lại mỗi 5 phút; `hw_encoder_limit` mặc định tạm là 3, thay bằng số đo theo mẫu máy.
+`upload_kbps` đo khi bật Camera mode và lặp lại mỗi 5 phút; `hw_encoder_limit` mặc định tạm là 3 khi dùng H.264 phần cứng và **1** khi phải dùng VP8 mã hóa phần mềm (tốn CPU hơn), thay bằng số đo theo mẫu máy.
 
 ### 9.3 Bậc chất lượng
 

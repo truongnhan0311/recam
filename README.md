@@ -10,7 +10,7 @@ Trạng thái: **bản nháp thiết kế (S1)**. Chưa có mã server hay app.
 
 ## Thiết kế
 
-- Media: **WebRTC** chuẩn (ICE, DTLS-SRTP, H.264 + Opus).
+- Media: **WebRTC** chuẩn (ICE, DTLS-SRTP, H.264 hoặc VP8 dự phòng + Opus).
 - Kênh điều khiển, vòng đời thiết bị, định dạng thông điệp: **bám sát thiết kế của Tuya** (MQTT, kích hoạt bằng token, `header`/`msg`).
 - Server **chỉ viết bằng Go**, gồm ba loại tách rời, mỗi loại có thể là một cụm:
   `cam-api` (REST), `cam-mq` (MQTT), `cam-stream` (TURN).

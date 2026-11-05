@@ -28,7 +28,10 @@
 
 - **Stack server (2026-11-05):** `cam-api` dùng Goravel v1.18.0; JWT đổi từ ES256 sang **HS256** (guard Goravel cố định HS256 ở `auth/jwt_guard.go`, người phụ trách đồng ý); refresh token tự viết. Danh sách thư viện ở `plan.md` mục 3.1.
 
+- **Codec và app (2026-11-05):** offer khai H.264 rồi VP8; camera dùng VP8 khi không có H.264 phần cứng (Android `flutter_webrtc` không có H.264 phần mềm). App dùng `flutter_webrtc` 1.6.3 và `mqtt_client` 10.14.0 (MQTT 3.1.1); bot test bằng `pion/webrtc/v4`. Xem `plan.md` 3.1, 3.2.
+
 ## Open issues
+- Chưa xác nhận trên máy thật việc Android thiếu H.264 phần mềm, và CPU của VP8 phần mềm (S7).
 - `make proto-check` chưa chạy lại trên bản v0.3.1 (phiên cloud chặn tải Go 1.26); đã kiểm bằng script Python tương đương.
 - Cân bằng lại tải shard: đã thiết kế (`ARCHITECTURE.md` 3.2.1, `MqMigrate`); chưa đo thời gian chuyển một đợt và chi phí `cam-api` đăng ký `cam/presence/+` trên mọi shard (S3).
 - Chưa ai xem xét thiết kế; mọi con số (nhịp tim, thời hạn, bậc chất lượng, công thức `max_viewers`) là đề xuất.

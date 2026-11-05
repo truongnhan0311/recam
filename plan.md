@@ -70,7 +70,7 @@ Ngày: 2026-11-05. Ngôn ngữ: tiếng Việt. Các con số sizing là **ướ
 1. Viewer gọi `POST /sessions {camera_id}`; server kiểm quyền và gửi push đánh thức Camera (nếu app ở nền).
 2. Viewer tạo offer SDP và gửi qua REST; server chuyển cho camera qua MQTT; camera trả answer; hai bên trao ICE (xem `docs/PROTOCOL.md`, mục 7). Đây là cách app của Tuya làm: **viewer tạo offer, camera trả lời**.
 3. ICE thử trực tiếp trước; không được thì dùng TURN với credential ngắn hạn (HMAC theo thời gian, RFC 8489 §9.2 / TURN REST).
-4. Media đi DTLS-SRTP (H.264 + Opus); lệnh điều khiển (đổi độ phân giải, bật đèn, talkback) đi **DataChannel** dạng JSON có phiên bản.
+4. Media đi DTLS-SRTP (H.264, dự phòng VP8 cho máy không có H.264 phần cứng; Opus); lệnh điều khiển (đổi độ phân giải, bật đèn, talkback) đi **DataChannel** dạng JSON có phiên bản.
 
 **So sánh hai cách truyền cho nhiều viewer: P2P hay SFU**
 | | P2P 1 camera → 1 viewer | SFU (LiveKit/mediasoup) |
@@ -309,6 +309,18 @@ Bản mới nhất theo Go module proxy ngày 2026-11-05. **Chỉ `cam-api` dùn
 
 Băm mật khẩu dùng Hash của Goravel (argon2id); HMAC, SHA-256 dùng thư viện chuẩn của Go. Không dùng `sideshow/apns2` (bản cuối 2024-10) vì FCM đã gửi được tới iOS.
 
+Test tự động (S7, CI): bot camera và viewer giả bằng `github.com/pion/webrtc/v4` v4.2.26, chỉ dùng trong test, không chạy trong sản phẩm.
+
+### 3.2 Package Flutter phía app (MQTT và WebRTC)
+
+Bản mới nhất theo pub.dev ngày 2026-11-05; tính năng đã kiểm trong mã nguồn của package.
+
+| Việc | Package | Bản | Đã kiểm |
+|---|---|---|---|
+| WebRTC | `flutter_webrtc` | 1.6.3 | Có `replaceTrack` (talkback), DataChannel; dùng libwebrtc `webrtc-sdk` 150.7871.04 cho Android và iOS. Android không có H.264 phần mềm (xem R13) |
+| MQTT (chọn) | `mqtt_client` (MQTT 3.1.1) | 10.14.0 | Last Will (`withWillTopic`, `withWillRetain`), QoS 1, WebSocket cho dự phòng cổng 443. Giao thức không cần tính năng riêng của MQTT 5; broker `mochi-mqtt` nhận cả 3.1.1 và 5 |
+| MQTT (phương án khác) | `mqtt5_client` | 5.2.0 | Cùng tác giả, có WebSocket; dùng nếu sau này cần MQTT 5 ở app |
+
 ---
 
 ## 4. Yêu cầu phần cứng
@@ -317,7 +329,7 @@ Băm mật khẩu dùng Hash của Goravel (argon2id); HMAC, SHA-256 dùng thư 
 
 | | Camera mode | Viewer mode |
 |---|---|---|
-| Android | ≥ 8.0, bộ mã hóa H.264 phần cứng, RAM ≥ 3 GB | ≥ 7.0, RAM ≥ 2 GB |
+| Android | ≥ 8.0, nên có bộ mã hóa H.264 phần cứng (không có thì dùng VP8 phần mềm, chỉ 1 viewer), RAM ≥ 3 GB | ≥ 7.0, RAM ≥ 2 GB |
 | iOS | iOS ≥ 15, iPhone 8 trở lên | iOS ≥ 15 |
 | Mạng | Upload ổn định ≥ 1.5 Mbps **cho mỗi viewer** ở 720p (ví dụ 3 viewer cần ≥ 4.5 Mbps) | Download ≥ 2 Mbps |
 | Khác | **Luôn cắm sạc** (tránh nhiệt và chai pin), tắt tối ưu pin cho app | |
@@ -418,7 +430,7 @@ Hai phiên làm việc song song không được cùng sửa một file (S2 và 
 | R4 | Nhiệt/pin điện thoại làm camera | Trung bình | Giới hạn 480p/15fps chế độ tiết kiệm; cảnh báo nhiệt |
 | R5 | Quyền riêng tư, pháp lý (COPPA/GDPR, chính sách store) | Cao | Rà soát pháp lý trước beta công khai |
 | R6 | Điện thoại camera gánh nhiều viewer thì nóng, tụt pin, hết upload; gói Plan 10 người có thể không bao giờ đạt được trên máy yếu | **Cao** | `max_viewers` theo khả năng máy (mục 2.1), hạ bitrate thích ứng, thông báo rõ cho người dùng; nếu S7 cho thấy máy phổ thông chỉ chịu 2–3 viewer thì cân nhắc SFU (mục 10) hoặc đổi cách quảng bá gói Plan |
-| R13 | Số bộ mã hóa phần cứng đồng thời trên điện thoại bị giới hạn (thường vài luồng); vượt thì rơi về mã hóa phần mềm, rất tốn CPU | Trung bình | Đo ở S7; ưu tiên H.264 phần cứng; mã hóa phần mềm chỉ bật khi máy đủ mạnh |
+| R13 | Số bộ mã hóa phần cứng đồng thời trên điện thoại bị giới hạn (thường vài luồng). Trên Android, libwebrtc của `flutter_webrtc` **không có H.264 phần mềm**, nên hết H.264 phần cứng thì chỉ còn VP8 phần mềm, rất tốn CPU | Trung bình | Offer khai H.264 và VP8 (`PROTOCOL.md` 7.3); camera dùng VP8 thì `hw_encoder_limit` = 1; S7 đo codec thực tế theo mẫu máy |
 | R7 | Số liệu sizing sai vì chỉ là ước lượng | Trung bình | S7 thay toàn bộ bằng số đo thật |
 | R8 | Phí store 15–30% và quy định thanh toán trong app | Trung bình | Tính vào giá; không dẫn người dùng ra ngoài store để trả tiền |
 | R9 | Quảng cáo gặp quy định đồng ý (GDPR/UMP, ATT) và chính sách nội dung; app liên quan tới trẻ em dễ bị soi kỹ | Cao | Quảng cáo chỉ phía Viewer, không trong khung video; dùng UMP/ATT; rà chính sách AdMob và store trước khi phát hành; cần tư vấn pháp lý |

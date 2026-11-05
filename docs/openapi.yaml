@@ -955,7 +955,7 @@ components:
         name:
           type: string
           pattern: "^[a-z0-9]+(\\.[a-z0-9_]+)*$"
-          examples: ["video.h264", "audio.opus", "speaker", "torch", "ptz"]
+          examples: ["video.h264", "video.vp8", "audio.opus", "speaker", "torch", "ptz"]
         v: { type: integer, minimum: 1 }
         params: { type: object, additionalProperties: true }
     DeviceInfo:
